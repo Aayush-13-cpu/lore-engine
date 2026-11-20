@@ -74,9 +74,10 @@ def placeholder(text, w, h, seed=0):
 
 # ---------- lettering overlays (RGBA, placed in screen space) ----------
 
-def caption_box(text, bg="#F6E27A", fg="#111111", width=780):
-    f = font("letter", 40)
-    lines = wrap(text.upper(), f, width - 48)
+def caption_box(text, bg="#F6E27A", fg="#111111", maxw=820):
+    f = font("letter", 54)
+    lines = wrap(text.upper(), f, maxw - 48)
+    width = int(max(f.getlength(line) for line in lines)) + 48  # hug the lettering like a real caption box
     lh = int(f.size * 1.2)
     h = lh * len(lines) + 36
     im = Image.new("RGBA", (width + 10, h + 10), (0, 0, 0, 0))

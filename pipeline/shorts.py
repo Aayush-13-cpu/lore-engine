@@ -137,7 +137,7 @@ def main(plan_path, imgdir, audiodir, outdir):
             f.write(ass(word_groups(tls), hook, total, R.C.accent))
         dst = os.path.join(outdir, "shorts", f"short{k}.mp4")
         grade = R.C.style.get("grade") or "eq=contrast=1.04:saturation=1.08"
-        fc = (f"[0:v]{grade},noise=c0s=5:allf=t,vignette=angle=PI/5,ass={subs}:fontsdir=assets/fonts[g];"
+        fc = (f"[0:v]{grade},vignette=angle=PI/5,ass={subs}:fontsdir=assets/fonts[g];"
               f"[g][2:v]overlay=x='-w+w*t/{total:.3f}':y=H-h:shortest=1[v]")
         p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
                               "-r", str(fps), "-i", "-", "-i", mixed, "-f", "lavfi", "-i",

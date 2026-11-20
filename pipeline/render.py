@@ -581,7 +581,7 @@ def main(plan_path, imgdir, audiodir, outdir):
         fc.append(f"{prev}[v{i}]xfade=transition={XFADE[tls[i]['tr']][0]}:duration={tls[i]['Tf'] / fps:.5f}"
                   f":offset={off / fps:.5f}[x{i}]")
         prev = f"[x{i}]"
-    fc.append(f"{prev}{C.style.get('grade') or 'eq=contrast=1.04:saturation=1.08'},noise=c0s=5:allf=t,vignette=angle=PI/5[g]")
+    fc.append(f"{prev}{C.style.get('grade') or 'eq=contrast=1.04:saturation=1.08'},vignette=angle=PI/5[g]")
     last = "[g]"
     if str(S["watermark"]).lower() in ("yes", "true", "1"):
         fc.append(f"[g][{nv}:v]overlay=W-w-36:H-h-28[w]")
