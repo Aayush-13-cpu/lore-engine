@@ -20,7 +20,8 @@ FILES = {
               "sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip",
     "dit.gguf": HF + "leejet/FLUX.2-klein-4B-GGUF/resolve/main/flux-2-klein-4b-Q8_0.gguf",
     "llm.gguf": HF + "unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
-    "vae.safetensors": HF + "black-forest-labs/FLUX.2-klein-4B/resolve/main/vae/diffusion_pytorch_model.safetensors",
+    # BFL's small decoder: the full VAE decode took 225 s per image on a 4-vCPU runner
+    "vae.safetensors": HF + "black-forest-labs/FLUX.2-small-decoder/resolve/main/full_encoder_small_decoder.safetensors",
     "up.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
 }
 
@@ -45,11 +46,33 @@ def sd_cli():
     sys.exit("sd-cli not found in the stable-diffusion.cpp release zip")
 
 
+def small_ref(path):
+    """-r images cost tokens like pixels; a ~0.26 MP copy keeps identity at a fraction of the compute."""
+    from PIL import Image  # python3-pil on the runner; only needed when a scene uses references
+    out = path[:-4] + ".r.png"
+    if not os.path.exists(out):
+        im = Image.open(path).convert("RGB")
+        im.thumbnail((448, 672))
+        im.save(out)
+    return out
+
+
+def my_jobs(jobs, shard, n):
+    """Longest-job-first onto the least-loaded shard; every shard computes the same split."""
+    load, mine = [0.0] * n, []
+    for j in sorted(jobs, key=lambda j: (-len(j["refs"]), j["name"])):
+        k = load.index(min(load))
+        load[k] += 1 + 0.45 * len(j["refs"])
+        if k == shard:
+            mine.append(j)
+    return mine
+
+
 def main(plan_path, phase, shard, nshards, out):
     P = json.load(open(plan_path))
     S = P["settings"]
     os.makedirs(out, exist_ok=True)
-    jobs = (P["refs"] if phase == "refs" else P["images"])[int(shard)::int(nshards)]
+    jobs = my_jobs(P["refs"] if phase == "refs" else P["images"], int(shard), int(nshards))
     todo = []
     for j in jobs:
         dst = os.path.join(out, j["name"])
@@ -76,7 +99,7 @@ def main(plan_path, phase, shard, nshards, out):
                "-W", str(w), "-H", str(h),
                "-s", str(j["seed"]), "-p", j["prompt"], "-o", dst + ".tmp.png", "-t", str(os.cpu_count()), "--flash-attn", "on"]
         for r in j["refs"]:
-            cmd += ["-r", os.path.join(out, r)]
+            cmd += ["-r", small_ref(os.path.join(out, r))]
         if upscale:
             cmd += ["--upscale-model", f"{M}/up.pth"]
         t = time.time()

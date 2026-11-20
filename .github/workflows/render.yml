@@ -6,7 +6,7 @@ on:
       video_id: { description: "video_id from the Videos sheet", required: true, default: VID001 }
       scenes: { description: "only these scenes, e.g. 1-8 (blank = whole video)", default: "" }
       draft: { description: "draft: placeholder art + real voice, ~10 min preview", type: boolean, default: false }
-      shards: { description: "parallel image runners (1-20)", default: "16" }
+      shards: { description: "parallel image runners (1-20)", default: "18" }
 
 concurrency: { group: "render-${{ inputs.video_id }}", cancel-in-progress: false }
 env:
@@ -16,7 +16,7 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    outputs: { shards: "${{ steps.plan.outputs.shards }}" }
+    outputs: { shards: "${{ steps.plan.outputs.shards }}", ref_shards: "${{ steps.plan.outputs.ref_shards }}" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,7 +27,13 @@ jobs:
         run: |
           mkdir -p work
           python -m pipeline.sheet "$VIDEO_ID" "$SCENES" > work/plan.json
-          python -c "import json,os;n=len(json.load(open('work/plan.json'))['images']);k=max(1,min(int(os.environ['SHARDS']),n,20));print('shards='+json.dumps(list(range(k))))" >> "$GITHUB_OUTPUT"
+          python - >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os
+          P = json.load(open("work/plan.json"))
+          cap = lambda n: list(range(max(1, min(int(os.environ["SHARDS"]), n, 20))))
+          print("shards=" + json.dumps(cap(len(P["images"]))))
+          print("ref_shards=" + json.dumps(cap(len(P["refs"]))))  # one runner per character
+          EOF
       - uses: actions/upload-artifact@v4
         with: { name: plan, path: work/plan.json, retention-days: 7 }
 
@@ -36,15 +42,19 @@ jobs:
     if: ${{ !inputs.draft }}
     runs-on: ubuntu-26.04
     timeout-minutes: 120
+    strategy:
+      matrix: { shard: "${{ fromJSON(needs.plan.outputs.ref_shards) }}" }
     env: { MODELS_DIR: /mnt/models }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
-      - run: python3 pipeline/images.py work/plan.json refs 0 1 work/images && touch work/images/refs-done.txt
+      - run: |
+          python3 pipeline/images.py work/plan.json refs ${{ matrix.shard }} ${{ strategy.job-total }} work/images
+          touch work/images/refs-done-${{ matrix.shard }}.txt
       - uses: actions/upload-artifact@v4
-        with: { name: refs, path: work/images, retention-days: 7, compression-level: 0 }
+        with: { name: "refs-${{ matrix.shard }}", path: work/images, retention-days: 7, compression-level: 0 }
 
   images:
     needs: [plan, refs]
@@ -60,8 +70,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
-        with: { name: refs, path: work/images }
-      - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+        with: { pattern: "refs-*", path: work/images, merge-multiple: true }
+      - run: |
+          sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+          sudo apt-get update -q && sudo apt-get install -y -q python3-pil
       - run: python3 pipeline/images.py work/plan.json scenes ${{ matrix.shard }} ${{ strategy.job-total }} work/images
       - uses: actions/upload-artifact@v4
         with:
@@ -108,7 +120,7 @@ jobs:
         with: { name: audio, path: work/audio }
       - uses: actions/download-artifact@v4
         if: ${{ !inputs.draft }}
-        with: { pattern: "{refs,img-*}", path: work/images, merge-multiple: true }
+        with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
       - name: Long-form video
         env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
         run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"
