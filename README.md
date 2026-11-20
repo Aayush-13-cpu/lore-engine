@@ -1,0 +1,67 @@
+# Lore Engine
+
+Turns one Excel sheet into a finished YouTube lore video (Marvel, DC, The Boys, Invincible...), its Shorts,
+thumbnail, captions, chapters and description. Everything renders on free GitHub Actions runners with
+open-source models. No paid APIs, no AI assistant needed to run it, and almost no work for your own computer.
+
+```
+content/lore_content.xlsx ──► plan ──┬─► refs (character faces) ─► images ×16 runners (FLUX.2-klein) ─┐
+                                     └─► voice (Kokoro TTS + word timings) ──────────────────────────┴─► render
+render: comic print pass ► camera moves ► ffmpeg transitions / green screen / grade ► mixed audio
+        ► video.mp4 + shorts/*.mp4 + thumbnail.jpg + captions.srt + description.txt + metadata.json
+```
+
+## Make a video
+
+1. Open `content/lore_content.xlsx`. Read the **Guide** tab once.
+2. Add a row in **Videos** and its rows in **Scenes** (one line of narration + one shot per row). `VID001` (Galactus) is a complete example.
+3. Preview the voice and pacing first (about 10 min, placeholder art):
+   `./lore.sh VID001 draft`
+4. Full render (about 60-120 min, mostly parallel image generation):
+   `./lore.sh VID001`
+5. Results land in `out/VID001/`. Upload `video.mp4`, `thumbnail.jpg` and `captions.srt`, and paste `description.txt`
+   (it already has the chapter timestamps). Upload `shorts/*.mp4` with titles from `shorts.json`, and set each Short's
+   *Related video* to the long video. That link is the funnel.
+
+No terminal? Use **GitHub → Actions → render → Run workflow**, then download the `VID001-final` artifact.
+
+## Keeping characters consistent
+
+The first render generates a reference image per character (`out/VID001/refs/ref_GALACTUS.png`) and feeds it to every
+scene that character appears in. When you like a face, commit it as `assets/characters/GALACTUS.png`. From then on,
+every video uses that exact design, which is how the channel gets a recognisable look.
+
+## Make it yours (optional assets)
+
+| Folder | What to drop in |
+| --- | --- |
+| `assets/music/<mood>/` | Royalty-free tracks (YouTube Audio Library, Pixabay). `music_mood` in Videos picks the folder. Without music it uses a synthesized drone. |
+| `assets/greenscreen/` | `name.png` or `name.mp4` with a pure #00FF00 area. Use it as template `gs:name`. Built in: `gs:tv`, `gs:monitor`, `gs:page`, `gs:file`. |
+| `assets/broll/` | Clips used with `visual = broll:file.mp4`. `broll:stars` is a built-in warp starfield. |
+| `assets/characters/` | Approved character reference images (see above). |
+
+Settings (voice, loudness, print look, Shorts length, channel name) live in the **Settings** tab.
+
+## Models and licenses (all commercial-use friendly)
+
+| Part | Tool | License |
+| --- | --- | --- |
+| Images | FLUX.2-klein-4B (GGUF Q8) + Qwen3-4B encoder via stable-diffusion.cpp | Apache-2.0 / MIT |
+| Upscale | Real-ESRGAN x4plus anime | BSD-3 |
+| Voice | Kokoro-82M | Apache-2.0 |
+| Fonts | Bangers, Anton, Comic Neue | OFL |
+| Video/audio | ffmpeg, OpenCV, Pillow | LGPL/GPL, Apache, HPND |
+
+## Before you publish
+
+- **Fact-check the script.** The sample Galactus script cites its issues in `sources`; check every claim. Accuracy is what earns a lore audience.
+- **YouTube's inauthentic-content policy** demonetises mass-produced, template-only videos. Your human-written script and analysis are what keep this channel on the right side of it. Vary structure, add opinion, and never bulk-publish thin videos.
+- **Characters are other companies' IP.** Commentary and analysis is the norm for lore channels, but don't use official logos, film stills or actors' likenesses in prompts.
+- **AI disclosure:** stylised comic art usually doesn't need YouTube's "altered or synthetic" label. Tick it if a shot could pass as real footage.
+
+## Troubleshooting
+
+- *Sheet problems: ...*: the `plan` job lists every bad cell (unknown template, missing character, bad `=N` reference). Fix the cells and run again.
+- *An image shard failed*: on the run page, use **Re-run failed jobs**. Finished shards are kept.
+- *A word sounds wrong*: add it to the **Pronounce** tab (`Uatu` → `Wah-too`).
+- *Too slow*: lower `image_width/height`, set `upscale` to `no`, or render a range like `1-20` first.

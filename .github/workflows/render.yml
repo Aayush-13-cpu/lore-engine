@@ -1,0 +1,125 @@
+name: render
+run-name: "render ${{ inputs.video_id }} ${{ inputs.scenes }}${{ inputs.draft && ' (draft)' || '' }}"
+on:
+  workflow_dispatch:
+    inputs:
+      video_id: { description: "video_id from the Videos sheet", required: true, default: VID001 }
+      scenes: { description: "only these scenes, e.g. 1-8 (blank = whole video)", default: "" }
+      draft: { description: "draft: placeholder art + real voice, ~10 min preview", type: boolean, default: false }
+      shards: { description: "parallel image runners (1-20)", default: "16" }
+
+concurrency: { group: "render-${{ inputs.video_id }}", cancel-in-progress: false }
+env:
+  PYTHONUNBUFFERED: "1"
+  VIDEO_ID: ${{ inputs.video_id }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs: { shards: "${{ steps.plan.outputs.shards }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -q openpyxl==3.1.5
+      - id: plan
+        env: { SCENES: "${{ inputs.scenes }}", SHARDS: "${{ inputs.shards }}" }
+        run: |
+          mkdir -p work
+          python -m pipeline.sheet "$VIDEO_ID" "$SCENES" > work/plan.json
+          python -c "import json,os;n=len(json.load(open('work/plan.json'))['images']);k=max(1,min(int(os.environ['SHARDS']),n,20));print('shards='+json.dumps(list(range(k))))" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with: { name: plan, path: work/plan.json, retention-days: 7 }
+
+  refs: # character reference images first, so every scene shard shares the exact same faces
+    needs: plan
+    if: ${{ !inputs.draft }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    env: { MODELS_DIR: /mnt/models }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+      - run: python3 pipeline/images.py work/plan.json refs 0 1 work/images && touch work/images/refs-done.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: refs, path: work/images, retention-days: 7 }
+
+  images:
+    needs: [plan, refs]
+    if: ${{ !inputs.draft }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false # a failed shard can be re-run alone with "Re-run failed jobs"
+      matrix: { shard: "${{ fromJSON(needs.plan.outputs.shards) }}" }
+    env: { MODELS_DIR: /mnt/models }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - uses: actions/download-artifact@v4
+        with: { name: refs, path: work/images }
+      - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+      - run: python3 pipeline/images.py work/plan.json scenes ${{ matrix.shard }} ${{ strategy.job-total }} work/images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: img-${{ matrix.shard }}
+          path: |
+            work/images/s*.png
+            work/images/thumb.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  voice:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
+      - run: |
+          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q kokoro==0.9.4 soundfile
+      - run: python -m pipeline.voice work/plan.json work/audio
+      - uses: actions/upload-artifact@v4
+        with: { name: audio, path: work/audio, retention-days: 7 }
+
+  render:
+    needs: [plan, voice, images]
+    if: ${{ !cancelled() && needs.voice.result == 'success' && (inputs.draft || needs.images.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - uses: actions/download-artifact@v4
+        with: { name: audio, path: work/audio }
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.draft }}
+        with: { pattern: "{refs,img-*}", path: work/images, merge-multiple: true }
+      - name: Long-form video
+        env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
+        run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"
+      - name: Shorts
+        env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
+        run: python -m pipeline.shorts work/plan.json work/images work/audio "out/$VIDEO_ID"
+      - name: Keep character refs for approval
+        run: mkdir -p "out/$VIDEO_ID/refs" && cp work/images/ref_*.png "out/$VIDEO_ID/refs/" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.video_id }}-final
+          path: |
+            out/
+            !out/**/_work/**
+          retention-days: 30
