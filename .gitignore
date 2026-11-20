@@ -1,0 +1,8 @@
+out/
+work/
+models/
+__pycache__/
+*.pyc
+.venv/
+~$*.xlsx
+.~lock.*
