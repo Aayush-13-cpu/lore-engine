@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,8 +27,9 @@ FILES = {
 
 def fetch(name):
     p = os.path.join(M, name)
-    if not os.path.exists(p):
-        urllib.request.urlretrieve(FILES[name], p + ".part")
+    if not os.path.exists(p):  # curl: retries + resume, so one dropped connection doesn't kill a 4 GB download
+        subprocess.run(["curl", "-fsSL", "--retry", "6", "--retry-all-errors", "-C", "-", "-o", p + ".part", FILES[name]],
+                       check=True)
         os.replace(p + ".part", p)
 
 
@@ -60,7 +60,11 @@ def main(plan_path, phase, shard, nshards, out):
     if not todo:
         return print("nothing to generate")
     os.makedirs(M, exist_ok=True)
-    upscale = str(S["upscale"]).lower() in ("yes", "true", "1")
+    # refs feed FLUX.2 as -r inputs: keep them small (no 4x upscale) and portrait so the face gets the pixels
+    upscale = phase != "refs" and str(S["upscale"]).lower() in ("yes", "true", "1")
+    w, h = int(float(S["image_width"])), int(float(S["image_height"]))
+    if phase == "refs":
+        w, h = min(w, h), max(w, h)
     with ThreadPoolExecutor(5) as ex:
         list(ex.map(fetch, [f for f in FILES if f != "up.pth" or upscale]))
     exe = sd_cli()
@@ -69,7 +73,7 @@ def main(plan_path, phase, shard, nshards, out):
         dst = os.path.join(out, j["name"])
         cmd = [exe, "--diffusion-model", f"{M}/dit.gguf", "--vae", f"{M}/vae.safetensors", "--llm", f"{M}/llm.gguf",
                "--cfg-scale", "1.0", "--sampling-method", "euler", "--steps", str(int(float(S["image_steps"]))),
-               "-W", str(int(float(S["image_width"]))), "-H", str(int(float(S["image_height"]))),
+               "-W", str(w), "-H", str(h),
                "-s", str(j["seed"]), "-p", j["prompt"], "-o", dst + ".tmp.png", "-t", str(os.cpu_count()), "--flash-attn", "on"]
         for r in j["refs"]:
             cmd += ["-r", os.path.join(out, r)]

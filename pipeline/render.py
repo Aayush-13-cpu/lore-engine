@@ -569,7 +569,7 @@ def main(plan_path, imgdir, audiodir, outdir):
 
     args = ["ffmpeg", "-y", "-loglevel", "error", "-stats"]
     for c in clips:
-        args += ["-i", c]
+        args += ["-threads", "1", "-i", c]  # one decoder per scene: keep each small or RAM grows with video length
     nv = len(clips)
     wm = os.path.join(work, "wm.png")
     comic.watermark(str(S["channel_name"]).upper()).save(wm)
@@ -595,9 +595,10 @@ def main(plan_path, imgdir, audiodir, outdir):
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", video])
 
     thumb = "thumb.png" if any(j["name"] == "thumb.png" for j in P["images"]) else \
-        next(s["images"][0] for s in P["scenes"] if s["images"])
-    comic.thumbnail(C.image(thumb), V.get("thumbnail_text") or V["title"], C.accent, V.get("universe", ""), C.k).save(
-        os.path.join(outdir, "thumbnail.jpg"), quality=92)
+        next((s["images"][0] for s in P["scenes"] if s["images"]), None)
+    if thumb:
+        comic.thumbnail(C.image(thumb), V.get("thumbnail_text") or V["title"], C.accent, V.get("universe", ""), C.k).save(
+            os.path.join(outdir, "thumbnail.jpg"), quality=92)
     chaps = chapters(tls, fps)
     desc = "\n".join([
         V.get("description", ""), "",

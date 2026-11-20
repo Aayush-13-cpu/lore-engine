@@ -20,7 +20,7 @@ HOOKY = re.compile(r"\b(never|nobody|no one|secret\w*|truth|real|actually|only|f
                    r"dead|destroy\w*|devour\w*|eat\w*|ate|god\w*|strongest|powerful|universe|why|how|what if|imagine|"
                    r"wasn't|didn't|isn't|can't|won't|every|billions?|millions?|end)\b", re.I)
 WEAK_START = re.compile(r"^(and|but|so|which|that|then|this|these|it|its|he|she|they|his|her|their|him|them|there)\b", re.I)
-SKIP = {"title", "sting", "quote", "endscreen"}  # cards are laid out for landscape and carry no story beat
+SKIP = {"title", "sting", "quote", "endscreen", "dossier", "split"}  # landscape-only layouts: a vertical crop cuts their text
 
 
 def score(s):
@@ -28,7 +28,7 @@ def score(s):
         return s["short_score"]
     t = s["narration"]
     return min(10.0, 2 * t.count("?") + 1.2 * len(HOOKY.findall(t)) + 2 * (s["sfx"] in ("impact", "riser"))
-               + (s["motion"] in ("punch", "shake")) + (s["template"] == "dossier"))
+               + (s["motion"] in ("punch", "shake")))
 
 
 def pick(scenes, meta, count, lo, hi):
@@ -99,7 +99,7 @@ def shots(tl, seed):
     a, b = (.3, .55) if rng.random() < .5 else (.7, .45)
     fy = rng.uniform(.4, .5)
     pan = [(0, 1.0, a, .5), (1, 1.06, b, .5)]
-    if n < 2.2 * R.C.fps or tl["s"]["template"] == "panels":
+    if n < 2.2 * R.C.fps:
         return [(n, pan)]
     focus = rng.uniform(.38, .62)
     return [(n // 2, pan), (n - n // 2, [(0, 1.32, focus, fy), (1, 1.4, focus + .03, fy - .02)])]
@@ -132,7 +132,6 @@ def main(plan_path, imgdir, audiodir, outdir):
         voice, sfx = R.tracks(tls, audiodir, total, fps)
         mixed = os.path.join(work, f"mix{k}.wav")
         R.mix(voice, sfx, total, mixed, P, work)
-        hook = h.get("hook_text") or scenes[-1 if h.get("hook_line") else 0]["caption"] or V.get("thumbnail_text", "")
         subs = os.path.join(work, f"short{k}.ass")
         with open(subs, "w") as f:
             f.write(ass(word_groups(tls), hook, total, R.C.accent))
@@ -149,8 +148,9 @@ def main(plan_path, imgdir, audiodir, outdir):
         for tl in tls:
             s = tl["s"]
             seed = zlib.crc32(f"{V['video_id']}short{k}{s['n']}".encode())
-            canvas, over, _, reveal = R.build(s, tl, W, H, scale=1.45, captions=False)
-            for n, keys in shots(tl, seed):
+            canvas, over, keys0, reveal = R.build(s, tl, W, H, scale=1.45, captions=False)
+            # panel pages keep their own camera path (it visits each panel as it is revealed)
+            for n, keys in [(tl["F"], keys0)] if s["template"] == "panels" else shots(tl, seed):
                 for fr in R.frames(canvas, keys, n, W, H, over, s, 0.0, reveal, seed):
                     p.stdin.write(fr.tobytes())
                 over = []  # SFX lettering pops once per scene, not again on the punch-in

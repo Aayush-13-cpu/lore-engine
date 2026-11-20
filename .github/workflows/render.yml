@@ -44,7 +44,7 @@ jobs:
       - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
       - run: python3 pipeline/images.py work/plan.json refs 0 1 work/images && touch work/images/refs-done.txt
       - uses: actions/upload-artifact@v4
-        with: { name: refs, path: work/images, retention-days: 7 }
+        with: { name: refs, path: work/images, retention-days: 7, compression-level: 0 }
 
   images:
     needs: [plan, refs]
@@ -71,6 +71,7 @@ jobs:
             work/images/thumb.png
           if-no-files-found: ignore
           retention-days: 7
+          compression-level: 0 # PNGs are already compressed
 
   voice:
     needs: plan

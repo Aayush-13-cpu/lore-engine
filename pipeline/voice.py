@@ -24,15 +24,15 @@ def main(plan_path, out):
     speed = float(V.get("voice_speed") or S["voice_speed"])
     pipe = KPipeline(lang_code=voice[0], repo_id="hexgrad/Kokoro-82M")  # voice ids start with a=US, b=UK
     # "Uatu -> Wah-too" in the Pronounce sheet becomes misaki's inline phoneme markup [Uatu](/wˈɑtu/)
-    fixes = [(re.compile(rf"\b{re.escape(w)}\b"), f"[{w}](/{pipe.g2p(say)[0]}/)") for w, say in P["pronounce"].items()]
+    fixes = [(re.compile(rf"\b{re.escape(w)}\b", re.I), pipe.g2p(say)[0]) for w, say in P["pronounce"].items()]
     lines = [(f"s{s['n']:03d}", s["narration"]) for s in P["scenes"]]
     lines += [(f"hook{h['n']}", h["hook_line"]) for h in P["shorts"] if h["hook_line"]]
     meta = {}
     for name, text in lines:
         if not text:
             continue
-        for rx, rep in fixes:
-            text = rx.sub(rep, text)
+        for rx, ph in fixes:  # keep the spelling as written (THANOS stays THANOS in subtitles)
+            text = rx.sub(lambda m, ph=ph: f"[{m.group(0)}](/{ph}/)", text)
         chunks, words, t = [], [], 0.0
         for r in pipe(text, voice=voice, speed=speed, split_pattern=r"\n+"):
             a = r.audio.numpy()

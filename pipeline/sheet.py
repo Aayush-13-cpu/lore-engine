@@ -116,7 +116,8 @@ def build(vid, subset="", path=SHEET):
                     s["images"].append(f"s{ref:03d}_0.png")
                 else:
                     name = f"s{n:03d}_{k}.png"
-                    images.append(dict(name=name, prompt=scene_prompt(style, v, cast_rows), seed=seed(vid, n, k),
+                    # seed from the shot text, not the row number: inserting a scene must not re-roll later art
+                    images.append(dict(name=name, prompt=scene_prompt(style, v, cast_rows), seed=seed(vid, v),
                                        refs=[f"ref_{c}.png" for c in cast[:2]]))
                     s["images"].append(name)
                     cast_ids += cast[:2]
@@ -126,7 +127,11 @@ def build(vid, subset="", path=SHEET):
             s["images"].append(last_img)  # blank visual = keep the previous picture on screen
         elif tpl in NEEDS_IMAGE or tpl.startswith("gs:"):
             errors.append(f"scene {n}: template {tpl} needs a visual and there is no earlier image to reuse")
+        if len(s["images"]) > 1 and tpl not in ("panels", "split"):
+            errors.append(f"scene {n}: '||' gives several images but template {tpl} shows only one (use panels or split)")
         if tpl == "dossier":
+            if visual:
+                errors.append(f"scene {n}: dossier uses the character's reference image; leave visual blank")
             if not cast:
                 errors.append(f"scene {n}: dossier needs a character in the characters column")
             cast_ids += cast[:1]
@@ -135,10 +140,10 @@ def build(vid, subset="", path=SHEET):
         scenes.append(s)
 
     if str(video.get("thumbnail_prompt", "")).strip():
-        tcast = [chars[c] for c in ids(video.get("thumbnail_characters", "")) if c in chars]
-        images.append(dict(name="thumb.png", prompt=scene_prompt(style, video["thumbnail_prompt"], tcast),
-                           seed=seed(vid, "thumb"), refs=[f"ref_{c['char_id'].upper()}.png" for c in tcast[:2]]))
-        cast_ids += [c["char_id"].upper() for c in tcast[:2]]
+        tids = [c for c in ids(video.get("thumbnail_characters", "")) if c in chars]
+        images.append(dict(name="thumb.png", prompt=scene_prompt(style, video["thumbnail_prompt"], [chars[c] for c in tids]),
+                           seed=seed(vid, "thumb"), refs=[f"ref_{c}.png" for c in tids[:2]]))
+        cast_ids += tids[:2]
 
     refs = []
     for c in dict.fromkeys(cast_ids):
