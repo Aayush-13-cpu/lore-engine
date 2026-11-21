@@ -4,13 +4,15 @@ usage: python -m pipeline.sheet VID001 [SCENES like 1-8] > work/plan.json
 """
 import hashlib
 import json
+import os
 import re
 import sys
 
 from openpyxl import load_workbook
 
 SHEET = "content/lore_content.xlsx"
-TEMPLATES = {"full", "panels", "split", "dossier", "title", "sting", "quote", "endscreen"}
+TEMPLATES = {"full", "panels", "split", "dossier", "title", "sting", "quote", "endscreen", "page"}
+PAGE = re.compile(r"^(\S+?)(#\d+|@[\d.]+,[\d.]+,[\d.]+,[\d.]+)?$")  # file-or-url [#panel | @x0,y0,x1,y1]
 NEEDS_IMAGE = {"full", "panels", "split"}  # other templates use an image only as backdrop
 TRANSITIONS = {"auto", "cut", "fade", "dissolve", "black", "flash", "whip", "glitch", "zoom", "circle", "wipe", "slide", "radial"}
 MOTIONS = {"auto", "in", "out", "left", "right", "up", "down", "static", "shake", "punch"}
@@ -20,7 +22,7 @@ GRADE_OK = re.compile(r"^[\w=:.,\-/ ]*$")  # ffmpeg filter args only: no graph s
 DEFAULTS = dict(
     channel_name="LORE VAULT", fps=30, width=1920, height=1080,
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
-    voice="am_michael,am_fenrir", voice_speed=0.95, voice_pitch=-1.0,
+    tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
     scene_pad=0.3, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5,
     shorts_count=3, shorts_min=25, shorts_max=58, watermark="yes",
 )
@@ -105,7 +107,17 @@ def build(vid, subset="", path=SHEET):
                 errors.append(f"scene {n}: {col} {s[col]!r} not one of {', '.join(sorted(a for a in allowed if a))}")
             if s[col] == "none":
                 s[col] = ""
-        if visual.lower().startswith("broll:"):
+        if visual.lower().startswith("page:"):  # a real comic page, framed panel by panel
+            spec = visual[5:].strip()
+            m = PAGE.match(spec)
+            if not m:
+                errors.append(f"scene {n}: page visual must look like page:file.jpg#2 or page:https://...jpg@0.1,0.2,0.6,0.5")
+            elif not m.group(1).startswith(("http://", "https://")) and not os.path.exists(f"assets/pages/{m.group(1)}"):
+                errors.append(f"scene {n}: assets/pages/{m.group(1)} not found (or use a web link)")
+            s["page"], s["template"] = spec, "page"
+        elif tpl == "page":
+            errors.append(f"scene {n}: template page needs visual page:<file or link>[#panel]")
+        elif visual.lower().startswith("broll:"):
             s["broll"] = visual[6:].strip()
         elif visual:
             for k, v in enumerate(p.strip() for p in visual.split("||")):

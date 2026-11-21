@@ -44,11 +44,13 @@ jobs:
     timeout-minutes: 120
     strategy:
       matrix: { shard: "${{ fromJSON(needs.plan.outputs.ref_shards) }}" }
-    env: { MODELS_DIR: /mnt/models }
+    env: { MODELS_DIR: /mnt/models, IMAGE_CACHE: work/cache }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
+      - uses: actions/cache/restore@v4 # images from earlier renders of this video; unchanged ones are reused
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
       - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
       - run: |
           python3 pipeline/images.py work/plan.json refs ${{ matrix.shard }} ${{ strategy.job-total }} work/images
@@ -64,13 +66,15 @@ jobs:
     strategy:
       fail-fast: false # a failed shard can be re-run alone with "Re-run failed jobs"
       matrix: { shard: "${{ fromJSON(needs.plan.outputs.shards) }}" }
-    env: { MODELS_DIR: /mnt/models }
+    env: { MODELS_DIR: /mnt/models, IMAGE_CACHE: work/cache }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
         with: { pattern: "refs-*", path: work/images, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
       - run: |
           sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
           sudo apt-get update -q && sudo apt-get install -y -q python3-pil
@@ -80,7 +84,8 @@ jobs:
           name: img-${{ matrix.shard }}
           path: |
             work/images/s*.png
-            work/images/thumb.png
+            work/images/s*.key
+            work/images/thumb.*
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 0 # PNGs are already compressed
@@ -88,7 +93,7 @@ jobs:
   voice:
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -96,9 +101,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
-      - run: |
-          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -q kokoro==0.9.4 soundfile
+      - run: | # CPU torch first so the TTS packages don't pull the 2 GB CUDA build
+          pip install -q torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q chatterbox-tts==0.1.7 faster-whisper==1.2.1 kokoro==0.9.4 soundfile
       - run: python -m pipeline.voice work/plan.json work/audio
       - uses: actions/upload-artifact@v4
         with: { name: audio, path: work/audio, retention-days: 7 }
@@ -121,6 +126,14 @@ jobs:
       - uses: actions/download-artifact@v4
         if: ${{ !inputs.draft }}
         with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
+      - uses: actions/cache/restore@v4 # merge with the previous cache so partial renders don't evict other scenes
+        if: ${{ !inputs.draft }}
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
+      - if: ${{ !inputs.draft }}
+        run: mkdir -p work/cache && cp work/images/*.png work/images/*.key work/cache/
+      - uses: actions/cache/save@v4 # saved before rendering: a failed render never costs the images again
+        if: ${{ !inputs.draft }}
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}" }
       - name: Long-form video
         env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
         run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"

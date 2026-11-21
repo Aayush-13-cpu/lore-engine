@@ -149,8 +149,8 @@ def main(plan_path, imgdir, audiodir, outdir):
             s = tl["s"]
             seed = zlib.crc32(f"{V['video_id']}short{k}{s['n']}".encode())
             canvas, over, keys0, reveal = R.build(s, tl, W, H, scale=1.45, captions=False)
-            # panel pages keep their own camera path (it visits each panel as it is revealed)
-            for n, keys in [(tl["F"], keys0)] if s["template"] == "panels" else shots(tl, seed):
+            # comic pages keep their own camera path (it slides to each panel being explained)
+            for n, keys in [(tl["F"], keys0)] if s["template"] in ("panels", "page") else shots(tl, seed):
                 for fr in R.frames(canvas, keys, n, W, H, over, s, 0.0, reveal, seed):
                     p.stdin.write(fr.tobytes())
                 over = []  # SFX lettering pops once per scene, not again on the punch-in

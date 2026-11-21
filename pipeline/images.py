@@ -4,6 +4,7 @@ usage: python3 pipeline/images.py PLAN.json refs|scenes SHARD NSHARDS OUTDIR
 Models download once into $MODELS_DIR. Character refs come from assets/characters/<ID>.png
 when present, so a look you approve stays fixed across every future video.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -68,18 +69,39 @@ def my_jobs(jobs, shard, n):
     return mine
 
 
+def keyfile(path):
+    return path[:-4] + ".key"
+
+
+def image_key(j, S, out):
+    """Everything that changes the picture; an unchanged key means a cached image can be reused as-is."""
+    if j.get("asset") and os.path.exists(j["asset"]):
+        return hashlib.sha1(open(j["asset"], "rb").read()).hexdigest()[:16]
+    refs = [open(keyfile(os.path.join(out, r))).read() for r in j["refs"]]  # a new face re-draws its scenes
+    blob = [j["prompt"], j["seed"], refs, S["image_width"], S["image_height"], S["image_steps"], S["upscale"],
+            FILES["dit.gguf"], FILES["vae.safetensors"]]
+    return hashlib.sha1(json.dumps(blob, default=str).encode()).hexdigest()[:16]
+
+
 def main(plan_path, phase, shard, nshards, out):
     P = json.load(open(plan_path))
     S = P["settings"]
+    cache = os.environ.get("IMAGE_CACHE", "")  # previous renders' images (actions/cache)
     os.makedirs(out, exist_ok=True)
     jobs = my_jobs(P["refs"] if phase == "refs" else P["images"], int(shard), int(nshards))
     todo = []
     for j in jobs:
-        dst = os.path.join(out, j["name"])
+        dst, key = os.path.join(out, j["name"]), image_key(j, S, out)
+        hit = os.path.join(cache, j["name"]) if cache else ""
         if j.get("asset") and os.path.exists(j["asset"]):
             shutil.copy(j["asset"], dst)  # approved reference image wins over generation
-        elif not os.path.exists(dst):
+        elif hit and os.path.exists(keyfile(hit)) and open(keyfile(hit)).read() == key:
+            shutil.copy(hit, dst)
+            print(f"cached {j['name']}")
+        else:
             todo.append(j)
+            continue
+        open(keyfile(dst), "w").write(key)
     if not todo:
         return print("nothing to generate")
     os.makedirs(M, exist_ok=True)
@@ -109,6 +131,7 @@ def main(plan_path, phase, shard, nshards, out):
             if attempt == 2:
                 sys.exit(f"sd-cli failed twice on {j['name']}")
         os.replace(dst + ".tmp.png", dst)
+        open(keyfile(dst), "w").write(image_key(j, S, out))
         print(f"[{i + 1}/{len(todo)}] {j['name']} {time.time() - t:.0f}s", flush=True)
 
 

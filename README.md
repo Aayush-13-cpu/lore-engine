@@ -6,7 +6,7 @@ open-source models. No paid APIs, no AI assistant needed to run it, and almost n
 
 ```
 content/lore_content.xlsx ──► plan ──┬─► refs (character faces) ─► images ×16 runners (FLUX.2-klein) ─┐
-                                     └─► voice (Kokoro TTS + word timings) ──────────────────────────┴─► render
+                                     └─► voice (Chatterbox narrator + Whisper word timings) ─────────┴─► render
 render: comic print pass ► camera moves ► ffmpeg transitions / green screen / grade ► mixed audio
         ► video.mp4 + shorts/*.mp4 + thumbnail.jpg + captions.srt + description.txt + metadata.json
 ```
@@ -35,12 +35,29 @@ every video uses that exact design, which is how the channel gets a recognisable
 
 | Folder | What to drop in |
 | --- | --- |
-| `assets/music/<mood>/` | Royalty-free tracks (YouTube Audio Library, Pixabay). `music_mood` in Videos picks the folder. Without music it uses a synthesized drone. |
+| `assets/music/<mood>/` | Your BGM, only if its license allows redistribution (this repo is public). Otherwise paste a direct download link in **Videos → music_url**. No music = voice + SFX only. |
+| `assets/voice/` | A clean 10-20 s recording of the narrator (your own voice is best); set **Settings → voice_ref** to its file name. |
+| `assets/pages/` | Real comic pages to explain panel by panel (or use web links, see below). |
 | `assets/greenscreen/` | `name.png` or `name.mp4` with a pure #00FF00 area. Use it as template `gs:name`. Built in: `gs:tv`, `gs:monitor`, `gs:page`, `gs:file`. |
 | `assets/broll/` | Clips used with `visual = broll:file.mp4`. `broll:stars` is a built-in warp starfield. |
 | `assets/characters/` | Approved character reference images (see above). |
 
 Settings (voice, loudness, print look, Shorts length, channel name) live in the **Settings** tab.
+
+## Explaining real comic pages (sliding window)
+
+Put `page:` in a scene's **visual**, using a file in `assets/pages/` or a web link:
+
+| visual | What the camera does |
+| --- | --- |
+| `page:ff48_p05.jpg` | Shows the whole page |
+| `page:ff48_p05.jpg#2` | Slides to panel 2 and spotlights it (panels are detected automatically) |
+| `page:https://site/page.jpg@0.1,0.2,0.6,0.5` | Frames any box by hand (fractions of the page) |
+
+Give each panel its own row and narration. Consecutive rows on the same page glide from panel to panel with no cut.
+Run a draft first to check the framing. Public-domain comics (Digital Comic Museum, Comic Book Plus, Wikimedia
+Commons) are free to use. For Marvel/DC pages, show them briefly while you comment on them, never use piracy
+sites, and don't commit their scans to this public repo (use links).
 
 ## Models and licenses (all commercial-use friendly)
 
@@ -48,7 +65,7 @@ Settings (voice, loudness, print look, Shorts length, channel name) live in the 
 | --- | --- | --- |
 | Images | FLUX.2-klein-4B (GGUF Q8) + Qwen3-4B encoder via stable-diffusion.cpp | Apache-2.0 / MIT |
 | Upscale | Real-ESRGAN x4plus anime | BSD-3 |
-| Voice | Kokoro-82M | Apache-2.0 |
+| Voice | Chatterbox-Turbo (narrator), faster-whisper (timing), Kokoro-82M (reference / fallback) | MIT / MIT / Apache-2.0 |
 | Fonts | Bangers, Anton, Comic Neue | OFL |
 | Video/audio | ffmpeg, OpenCV, Pillow | LGPL/GPL, Apache, HPND |
 
@@ -65,3 +82,5 @@ Settings (voice, loudness, print look, Shorts length, channel name) live in the 
 - *An image shard failed*: on the run page, use **Re-run failed jobs**. Finished shards are kept.
 - *A word sounds wrong*: add it to the **Pronounce** tab (`Uatu` → `Wah-too`).
 - *Too slow*: lower `image_width/height`, set `upscale` to `no`, or render a range like `1-20` first.
+- *Re-rendering after a small change*: images are cached per video, so changing music, narration or one visual
+  only redraws what changed.

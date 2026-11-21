@@ -11,13 +11,14 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
 import zlib
 from multiprocessing import Pool
 
 import cv2
 import numpy as np
 import soundfile as sf
-from PIL import Image
+from PIL import Image, ImageDraw, ImageEnhance
 
 from pipeline import comic
 from pipeline.sheet import TRANSITIONS
@@ -25,12 +26,12 @@ from pipeline.sheet import TRANSITIONS
 SR = 48000
 K = 1.25  # canvas is 25% larger than the frame: room for camera moves without upscaling
 DRAFT = os.environ.get("DRAFT") == "1"
-XFADE = {  # sheet name -> (ffmpeg xfade transition, seconds, whoosh)
-    "cut": ("fade", 0.0, False), "fade": ("fade", 0.5, False), "dissolve": ("dissolve", 0.6, False),
-    "black": ("fadeblack", 0.9, False), "flash": ("fadewhite", 0.4, True), "whip": ("slideleft", 0.3, True),
-    "glitch": ("pixelize", 0.35, True), "zoom": ("zoomin", 0.45, True), "circle": ("circleopen", 0.6, True),
-    "wipe": ("wipeleft", 0.45, True), "slide": ("slideup", 0.4, True), "radial": ("radial", 0.6, True),
+XFADE = {  # sheet name -> (ffmpeg xfade transition, seconds); transitions are silent by design
+    "cut": ("fade", 0.0), "fade": ("fade", 0.5), "dissolve": ("dissolve", 0.6), "black": ("fadeblack", 0.9),
+    "flash": ("fadewhite", 0.4), "whip": ("slideleft", 0.3), "glitch": ("pixelize", 0.35), "zoom": ("zoomin", 0.45),
+    "circle": ("circleopen", 0.6), "wipe": ("wipeleft", 0.45), "slide": ("slideup", 0.4), "radial": ("radial", 0.6),
 }
+PAUSE = {"?": 1.5, "!": 1.4, ".": 1.2, ";": 0.8, ":": 0.8, ",": 0.45}  # breath after a line, by how it ends
 assert set(XFADE) | {"auto"} == TRANSITIONS
 AUTO_T = ["fade", "cut", "whip", "cut", "dissolve", "cut", "zoom", "cut"]  # mostly cuts: flashy-every-scene reads amateur
 AUTO_M = ["in", "right", "out", "left", "in", "up", "out", "down"]
@@ -43,6 +44,21 @@ PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y)
 CARDS = {"title", "sting", "quote", "endscreen"}
 ROMAN = "I II III IV V VI VII VIII IX X XI XII XIII XIV XV XVI XVII XVIII XIX XX".split()
 C = None  # per-process render context
+
+
+def fetch(url, path):
+    """Download once. Honest user agent (Wikimedia & co. reject fake browsers); errors survive the worker pool."""
+    if not os.path.exists(path):
+        ua = f"lore-engine/1.0 (+https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'lore-engine')})"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": ua}), timeout=120) as r:
+                data = r.read()
+        except Exception as e:
+            raise RuntimeError(f"could not download {url}: {e} (put the file in assets/ or use another link)") from None
+        with open(f"{path}.{os.getpid()}", "wb") as f:
+            f.write(data)
+        os.replace(f"{path}.{os.getpid()}", path)
+    return path
 
 
 def run(cmd):
@@ -61,6 +77,18 @@ class Ctx:
         self.style = plan["style"]
         self.accent = self.style.get("accent") or "#E62429"
         self.prompts = {j["name"]: j["prompt"] for j in plan["images"] + plan["refs"]}
+        self.pages = {}
+
+    def page(self, spec):
+        """Real comic page from assets/pages/ or a web link, plus its panel boxes in reading order."""
+        src = spec.split("#")[0].split("@")[0]
+        if src not in self.pages:
+            path = os.path.join("assets", "pages", src)
+            if src.startswith(("http://", "https://")):
+                path = fetch(src, os.path.join(self.work, f"page_{zlib.crc32(src.encode())}"))
+            img = Image.open(path).convert("RGB")
+            self.pages[src] = (img, panel_boxes(img))
+        return self.pages[src]
 
     def image(self, name):
         p = os.path.join(self.imgdir, name)
@@ -74,6 +102,49 @@ class Ctx:
 def init(*args):
     global C
     C = Ctx(*args)
+
+
+def panel_boxes(img):
+    """Panels in western reading order by recursive XY-cut along gutters of the page's own paper colour
+    (white or yellowed newsprint). Art that bleeds across a gutter merges those panels; full-bleed = one box."""
+    a = np.asarray(img.convert("RGB")).astype(np.int16)
+    h, w = a.shape[:2]
+    rim = np.concatenate([a[:6].reshape(-1, 3), a[-6:].reshape(-1, 3), a[:, :6].reshape(-1, 3), a[:, -6:].reshape(-1, 3)])
+    gutter = (np.abs(a - np.median(rim, axis=0)).max(axis=2) < 32) | (a.min(axis=2) > 225)
+    out = []
+
+    def cut(x0, y0, x1, y1, axis, flipped):  # axis 0: split on horizontal gutters (rows), 1: vertical (columns)
+        prof = gutter[y0:y1, x0:x1].mean(axis=1 - axis) >= 0.88
+        spans, i, size = [], 0, (h, w)[axis]
+        while i < len(prof):
+            j = i
+            while j < len(prof) and not prof[j]:
+                j += 1
+            if j - i >= 0.03 * size:  # ignore slivers: page headers, specks
+                spans.append((i, j))
+            i = j + 1
+        boxes = [(x0, y0 + i, x1, y0 + j) if axis == 0 else (x0 + i, y0, x0 + j, y1) for i, j in spans]
+        if len(boxes) > 1 or (boxes and not flipped):
+            for b in boxes:
+                cut(*b, 1 - axis, len(boxes) == 1)
+        elif boxes and (boxes[0][2] - boxes[0][0]) * (boxes[0][3] - boxes[0][1]) > 0.02 * w * h:
+            out.append(boxes[0])
+
+    cut(0, 0, w, h, 0, False)
+    return out or [(0, 0, w, h)]
+
+
+def page_focus(spec, boxes, pw, ph):
+    """'#3' = third panel, '@x0,y0,x1,y1' = manual box as page fractions, nothing = whole page."""
+    if "@" in spec:
+        x0, y0, x1, y1 = map(float, spec.split("@")[1].split(","))
+        return x0 * pw, y0 * ph, x1 * pw, y1 * ph
+    if "#" in spec:
+        n = int(spec.split("#")[1])
+        if not 1 <= n <= len(boxes):
+            raise RuntimeError(f"page {spec}: only {len(boxes)} panels detected; frame it by hand with @x0,y0,x1,y1")
+        return boxes[n - 1]
+    return 0, 0, pw, ph
 
 
 def spread(text, dur):
@@ -93,21 +164,32 @@ def voice_key(s):
     return s.get("voice_key") or f"s{s['n']:03d}"  # Shorts hook lines carry their own audio name
 
 
+def page_file(s):
+    return s.get("page", "").split("#")[0].split("@")[0]
+
+
 def timeline(P, meta, fps, pad=None):
     pad = float(P["settings"]["scene_pad"]) if pad is None else pad
+    sc = P["scenes"]
     out, start, chapter, titles = [], 0, None, 0
-    for i, s in enumerate(P["scenes"]):
+    for i, s in enumerate(sc):
+        prev = sc[i - 1] if i else None
         tr = s["transition"]
         if tr == "auto":
-            tr = "cut" if i == 0 else "black" if s["chapter"] != chapter or s["template"] in ("title", "sting") \
+            same_page = prev and page_file(s) and page_file(s) == page_file(prev)  # camera slides on, no cut visible
+            tr = "cut" if i == 0 or same_page else "black" if s["chapter"] != chapter or s["template"] in ("title", "sting") \
                 else AUTO_T[i % len(AUTO_T)]
         Tf = 0 if i == 0 else max(1, round(XFADE[tr][1] * fps))
         m = meta.get(voice_key(s))
         speech = m["dur"] if m else 0.0
-        body = (speech + pad + s["hold"]) if speech else (s["hold"] or 2.5)
+        text = s["narration"].rstrip()
+        breath = 0.5 if text.endswith(("...", "…")) else PAUSE.get(text[-1:], 1.0)
+        if i + 1 < len(sc) and sc[i + 1]["chapter"] != s["chapter"]:
+            breath += 1.5  # let a chapter land before the next one starts
+        body = (speech + pad * breath + s["hold"]) if speech else (s["hold"] or 2.5)
         F = max(round((Tf / 2 / fps + body) * fps), Tf + 1)
         titles += s["template"] == "title"
-        out.append(dict(i=i, s=s, tr=tr, Tf=Tf, F=F, start=start, voice=(start + Tf / 2) / fps, speech=speech,
+        out.append(dict(i=i, s=s, prev=prev, tr=tr, Tf=Tf, F=F, start=start, voice=(start + Tf / 2) / fps, speech=speech,
                         words=(m or {}).get("words") or spread(s["narration"], speech), chapter_no=max(titles, 1)))
         start += F
         chapter = s["chapter"]
@@ -252,6 +334,31 @@ def build(s, tl, W, H, scale=1.0, captions=True):
         keys = sorted(keys) + [(1, 1.02, .5, .5)]
     elif tpl == "split":
         canvas = comic.split(imgs[0], imgs[-1], (s["caption"].split("|") + ["", ""])[:2], acc, cw, ch, k)
+    elif tpl == "page":
+        img, boxes = C.page(s["page"])
+        pw, ph = img.size
+        cw = max(pw * 1.06, ph * 1.06 * W / H)  # dark board in the frame's aspect, whole page visible at zoom 1
+        ch = cw * H / W
+        ox, oy = (cw - pw) / 2, (ch - ph) / 2
+        canvas = Image.new("RGB", (round(cw), round(ch)), (14, 15, 19))
+        canvas.paste(img, (round(ox), round(oy)))
+
+        def frame_on(rect, push=1.0):  # camera key that fits a page rectangle with a little air around it
+            x0, y0, x1, y1 = rect
+            vw = max((x1 - x0) * 1.08, (y1 - y0) * 1.08 * W / H)
+            return max(cw / vw, 1.0) * push, (ox + (x0 + x1) / 2) / cw, (oy + (y0 + y1) / 2) / ch
+
+        prev = tl.get("prev") or {}
+        same = prev.get("template") == "page" and page_file(prev) == page_file(s)
+        start = frame_on(page_focus(prev["page"], boxes, pw, ph)) if same else frame_on((0, 0, pw, ph))
+        target = page_focus(s["page"], boxes, pw, ph)
+        if target != (0, 0, pw, ph):  # spotlight the panel being explained: dim the page, outline the panel
+            box = tuple(round(v) for v in (ox + target[0], oy + target[1], ox + target[2], oy + target[3]))
+            lit = canvas.crop(box)
+            canvas = ImageEnhance.Brightness(canvas).enhance(0.42)
+            canvas.paste(lit, box[:2])
+            ImageDraw.Draw(canvas).rectangle(box, outline=comic.rgb(acc), width=5)
+        keys = [(0, *start), (min(0.9 / L, 0.4), *frame_on(target)), (1, *frame_on(target, 1.04))]
     elif tpl == "dossier":
         cid = s["characters"][0]
         canvas = comic.dossier(C.image(f"ref_{cid}.png"), C.P["characters"][cid], acc, C.P["video"].get("universe", ""), cw, ch, k)
@@ -287,16 +394,22 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
     parts = particles(fx, W, H, seed) if fx in ("embers", "dust", "snow", "rain", "stars") else None
     shake = shaker(s, lead, seed) if s else None
     rng = np.random.default_rng(seed)
+    mips = [canvas]  # half-size copies: big zoom-outs (whole comic pages) sample these instead of shimmering
+    while mips[-1].shape[1] > 2.2 * W:
+        mips.append(cv2.pyrDown(mips[-1]))
     for f in range(n):
         tau, t = f / fps, f / max(n - 1, 1)
-        src = reveal(tau) if reveal else canvas
         z, fx_, fy_ = interp(keys, t)
         sc = base * z
         vw, vh = W / sc, H / sc
         cx = min(max(fx_ * cw_, vw / 2), cw_ - vw / 2)
         cy = min(max(fy_ * ch_, vh / 2), ch_ - vh / 2)
+        lvl = 0
+        while not reveal and lvl + 1 < len(mips) and sc * 2 ** lvl < 0.55:
+            lvl += 1
+        src, k = (reveal(tau), 1.0) if reveal else (mips[lvl], 2.0 ** lvl)
         dx, dy = shake(tau) if shake else (0.0, 0.0)
-        M = np.float32([[sc, 0, W / 2 - sc * cx + dx], [0, sc, H / 2 - sc * cy + dy]])
+        M = np.float32([[sc * k, 0, W / 2 - sc * cx + dx], [0, sc * k, H / 2 - sc * cy + dy]])
         frame = cv2.warpAffine(src, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
         for ov in overlays:
             blend(frame, ov, tau)
@@ -432,7 +545,7 @@ def place(dst, src, t, gain=1.0):
 
 
 def tracks(tls, audiodir, total, fps):
-    """Voice (24 kHz, as Kokoro made it) and SFX (48 kHz) timelines."""
+    """Voice (24 kHz, as the TTS made it) and SFX (48 kHz) timelines. Transitions stay silent."""
     voice = np.zeros(int(total * 24000) + 1, np.float32)
     sfx = np.zeros(int(total * SR) + 1, np.float32)
     bank = sfx_bank()
@@ -442,33 +555,24 @@ def tracks(tls, audiodir, total, fps):
             a, _ = sf.read(f"{audiodir}/{voice_key(s)}.wav", dtype="float32")
             i0 = int(tl["voice"] * 24000)
             voice[i0:i0 + len(a)] += a[:len(voice) - i0]
-        if tl["Tf"] and XFADE[tl["tr"]][2]:
-            place(sfx, bank["whoosh"], tl["start"] / fps - 0.2, 0.6)
         if s["sfx"]:
             place(sfx, bank[s["sfx"]], tl["voice"] - (len(bank["riser"]) / SR if s["sfx"] == "riser" else 0))
     return voice, sfx
 
 
-def music_input(P, total, work):
+def music_input(P, work):
+    """Your BGM: Videos.music_url (keeps licensed tracks out of the public repo) or assets/music/<mood>/. None = no bed."""
+    url = str(P["video"].get("music_url", "")).strip()
+    if url:
+        return ["-stream_loop", "-1", "-i", fetch(url, os.path.join(work, f"music_{zlib.crc32(url.encode())}"))]
     mood = str(P["video"].get("music_mood", "")).strip()
     ext = (".mp3", ".wav", ".ogg", ".m4a", ".flac")
     files = [f for f in sorted(glob.glob(f"assets/music/{mood}/*") if mood else []) + sorted(glob.glob("assets/music/*"))
              if f.lower().endswith(ext)]
-    if files:
-        return ["-stream_loop", "-1", "-i", files[zlib.crc32(P["video"]["video_id"].encode()) % len(files)]]
-    # shortcut: synthesized minor drone so a render never ships silent; drop real tracks in assets/music/<mood>/
-    n = int(total * SR)
-    t = np.arange(n, dtype=np.float32) / SR
-    rng = np.random.default_rng(zlib.crc32(P["video"]["video_id"].encode()))
-    root = 55 * 2 ** (int(rng.integers(0, 5)) / 12)
-    y = np.zeros(n, np.float32)
-    for mult, amp in ((1, .5), (1.5, .25), (2, .3), (2.4, .12), (3, .08)):
-        for det in (-.15, .15):
-            y += amp * np.sin(2 * np.pi * (root * mult + det) * t + rng.random() * 6.283)
-    y *= .6 + .4 * np.sin(2 * np.pi * t / 23 + 1)
-    path = os.path.join(work, "drone.wav")
-    sf.write(path, y / (np.abs(y).max() + 1e-9) * .5, SR)
-    return ["-i", path]
+    if not files:
+        print("WARNING: no background music (set Videos.music_url or add files to assets/music/)", flush=True)
+        return []
+    return ["-stream_loop", "-1", "-i", files[zlib.crc32(P["video"]["video_id"].encode()) % len(files)]]
 
 
 def mix(voice, sfx, total, out, P, work):
@@ -476,16 +580,19 @@ def mix(voice, sfx, total, out, P, work):
     vp, sp = os.path.join(work, "voice.wav"), os.path.join(work, "sfx.wav")
     sf.write(vp, voice, 24000)
     sf.write(sp, sfx, SR)
-    pitch = float(S["voice_pitch"])
-    rb = f"rubberband=pitch={2 ** (pitch / 12):.5f}:formant=preserved," if pitch else ""
+    music = music_input(P, work)
     st = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
-    fc = (f"[0:a]aresample=48000,highpass=f=70,{rb}equalizer=f=140:t=q:w=1:g=2,equalizer=f=3200:t=q:w=1.4:g=2.5,"
-          f"deesser=i=0.35,acompressor=threshold=0.08:ratio=3:attack=8:release=140:makeup=2,{st},asplit=2[v][key];"
-          f"[2:a]{st},volume={float(S['music_db'])}dB,afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
-          "[m][key]sidechaincompress=threshold=0.04:ratio=8:attack=30:release=500[duck];"
-          f"[1:a]{st}[s];[v][duck][s]amix=inputs=3:normalize=0:duration=first,"
-          f"loudnorm=I={float(S['lufs'])}:TP=-1.5:LRA=11,aresample=48000[a]")
-    run(["ffmpeg", "-y", "-loglevel", "error", "-i", vp, "-i", sp, *music_input(P, total, work),
+    # light touch keeps the narrator human: rumble cut, gentle 2:1 compression, soft de-ess, no pitch tricks
+    fc = (f"[0:a]aresample=48000,highpass=f=60,acompressor=threshold=0.125:ratio=2:attack=15:release=200:makeup=1.5,"
+          f"deesser=i=0.2,{st}" + (",asplit=2[v][key];" if music else "[v];") + f"[1:a]{st}[s];")
+    if music:
+        fc += (f"[2:a]{st},volume={float(S['music_db'])}dB,afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
+               "[m][key]sidechaincompress=threshold=0.05:ratio=6:attack=40:release=600[duck];"
+               "[v][duck][s]amix=inputs=3:normalize=0:duration=first,")
+    else:
+        fc += "[v][s]amix=inputs=2:normalize=0:duration=first,"
+    fc += f"loudnorm=I={float(S['lufs'])}:TP=-1.5:LRA=11,aresample=48000[a]"
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", vp, "-i", sp, *music,
          "-filter_complex", fc, "-map", "[a]", "-t", f"{total:.3f}", "-ar", "48000", out])
 
 
@@ -548,6 +655,9 @@ def main(plan_path, imgdir, audiodir, outdir):
     init(P, imgdir, work)
     V, S, fps = P["video"], P["settings"], C.fps
     tls = timeline(P, meta, fps)
+    for s in P["scenes"]:  # fetch + analyse each comic page once here, not in every worker
+        if s.get("page"):
+            C.page(s["page"])
     clips = [os.path.join(work, f"clip{tl['i']:03d}.mp4") for tl in tls]
     with Pool(max(1, (os.cpu_count() or 2) // 2), initializer=init, initargs=(P, imgdir, work)) as pool:
         for done, n in enumerate(pool.imap_unordered(render_scene, zip(tls, clips)), 1):
@@ -614,5 +724,14 @@ def main(plan_path, imgdir, audiodir, outdir):
     print(f"done: {video} ({total / 60:.1f} min)")
 
 
+def _selfcheck():
+    page = Image.new("RGB", (1000, 1500), "white")  # wide top panel, tall left, two stacked right
+    for x0, y0, x1, y1 in [(40, 40, 960, 500), (40, 540, 480, 1460), (520, 540, 960, 980), (520, 1020, 960, 1460)]:
+        page.paste((60, 60, 60), (x0, y0, x1, y1))
+    got = [b[:2] for b in panel_boxes(page)]
+    assert got == [(40, 40), (40, 540), (520, 540), (520, 1020)], got
+
+
 if __name__ == "__main__":
+    _selfcheck()
     main(*sys.argv[1:5])
