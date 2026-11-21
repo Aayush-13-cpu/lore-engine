@@ -11,19 +11,23 @@ render: comic print pass ► camera moves ► ffmpeg transitions / green screen 
         ► video.mp4 + shorts/*.mp4 + thumbnail.jpg + captions.srt + description.txt + metadata.json
 ```
 
-## Make a video
+## Make a video (all from the terminal, no AI needed)
 
-1. Open `content/lore_content.xlsx`. Read the **Guide** tab once.
-2. Add a row in **Videos** and its rows in **Scenes** (one line of narration + one shot per row). `VID001` (Galactus) is a complete example.
-3. Preview the voice and pacing first (about 10 min, placeholder art):
-   `./lore.sh VID001 draft`
-4. Full render (about 60-120 min, mostly parallel image generation):
-   `./lore.sh VID001`
-5. Results land in `out/VID001/`. Upload `video.mp4`, `thumbnail.jpg` and `captions.srt`, and paste `description.txt`
-   (it already has the chapter timestamps). Upload `shorts/*.mp4` with titles from `shorts.json`, and set each Short's
-   *Related video* to the long video. That link is the funnel.
+```
+./lore.sh sheet               # 1. write the video: a Videos row + its Scenes rows (VID001 is a full example)
+./lore.sh draft  VID001       # 2. preview voice and pacing with placeholder art (~15-20 min)
+./lore.sh render VID001       # 3. full video + Shorts + thumbnail (first time ~2 h, re-renders reuse images)
+./lore.sh status              #    what is running and how far along
+./lore.sh watch               #    follow the newest run, download when done
+./lore.sh get VID001          #    download the newest finished result
+```
 
-No terminal? Use **GitHub → Actions → render → Run workflow**, then download the `VID001-final` artifact.
+Results land in `out/VID001/`. Upload `video.mp4`, `thumbnail.jpg` and `captions.srt`, and paste `description.txt`
+(it already has the chapter timestamps). Upload `shorts/*.mp4` with titles from `shorts.json`, and set each Short's
+*Related video* to the long video. That link is the funnel.
+
+Your laptop only needs `git` and the GitHub CLI (`gh auth login`). All rendering happens on GitHub Actions.
+No terminal? **GitHub → Actions → render → Run workflow**, then download the `VID001-final` artifact.
 
 ## Keeping characters consistent
 

@@ -108,6 +108,19 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: audio, path: work/audio, retention-days: 7 }
 
+  cache: # keep finished images even if voice or render fails later: re-runs then skip the image stage
+    needs: images
+    if: ${{ !cancelled() && !inputs.draft && needs.images.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
+      - uses: actions/cache/restore@v4 # merge with the previous cache so partial renders don't evict other scenes
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
+      - run: mkdir -p work/cache && cp work/images/*.png work/images/*.key work/cache/
+      - uses: actions/cache/save@v4
+        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}" }
+
   render:
     needs: [plan, voice, images]
     if: ${{ !cancelled() && needs.voice.result == 'success' && (inputs.draft || needs.images.result == 'success') }}
@@ -126,14 +139,6 @@ jobs:
       - uses: actions/download-artifact@v4
         if: ${{ !inputs.draft }}
         with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
-      - uses: actions/cache/restore@v4 # merge with the previous cache so partial renders don't evict other scenes
-        if: ${{ !inputs.draft }}
-        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
-      - if: ${{ !inputs.draft }}
-        run: mkdir -p work/cache && cp work/images/*.png work/images/*.key work/cache/
-      - uses: actions/cache/save@v4 # saved before rendering: a failed render never costs the images again
-        if: ${{ !inputs.draft }}
-        with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}" }
       - name: Long-form video
         env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
         run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"

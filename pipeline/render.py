@@ -564,15 +564,27 @@ def music_input(P, work):
     """Your BGM: Videos.music_url (keeps licensed tracks out of the public repo) or assets/music/<mood>/. None = no bed."""
     url = str(P["video"].get("music_url", "")).strip()
     if url:
-        return ["-stream_loop", "-1", "-i", fetch(url, os.path.join(work, f"music_{zlib.crc32(url.encode())}"))]
+        return fetch(url, os.path.join(work, f"music_{zlib.crc32(url.encode())}"))
     mood = str(P["video"].get("music_mood", "")).strip()
     ext = (".mp3", ".wav", ".ogg", ".m4a", ".flac")
     files = [f for f in sorted(glob.glob(f"assets/music/{mood}/*") if mood else []) + sorted(glob.glob("assets/music/*"))
              if f.lower().endswith(ext)]
     if not files:
         print("WARNING: no background music (set Videos.music_url or add files to assets/music/)", flush=True)
-        return []
-    return ["-stream_loop", "-1", "-i", files[zlib.crc32(P["video"]["video_id"].encode()) % len(files)]]
+        return None
+    return files[zlib.crc32(P["video"]["video_id"].encode()) % len(files)]
+
+
+def music_bed(path, total):
+    """Inputs + filter that repeat a short track with 6 s crossfades so the loop point is never a hard cut."""
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                               capture_output=True, text=True, check=True).stdout)
+    n = max(1, math.ceil((total - 6) / max(dur - 6, 1)))
+    chain, label = "", "[2:a]"
+    for k in range(1, n):
+        chain += f"{label}[{2 + k}:a]acrossfade=d=6:c1=tri:c2=tri[mx{k}];"
+        label = f"[mx{k}]"
+    return [arg for _ in range(n) for arg in ("-i", path)], chain, label
 
 
 def mix(voice, sfx, total, out, P, work):
@@ -580,13 +592,14 @@ def mix(voice, sfx, total, out, P, work):
     vp, sp = os.path.join(work, "voice.wav"), os.path.join(work, "sfx.wav")
     sf.write(vp, voice, 24000)
     sf.write(sp, sfx, SR)
-    music = music_input(P, work)
+    path = music_input(P, work)
+    music, chain, bed = music_bed(path, total) if path else ([], "", "")
     st = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
     # light touch keeps the narrator human: rumble cut, gentle 2:1 compression, soft de-ess, no pitch tricks
     fc = (f"[0:a]aresample=48000,highpass=f=60,acompressor=threshold=0.125:ratio=2:attack=15:release=200:makeup=1.5,"
           f"deesser=i=0.2,{st}" + (",asplit=2[v][key];" if music else "[v];") + f"[1:a]{st}[s];")
     if music:
-        fc += (f"[2:a]{st},volume={float(S['music_db'])}dB,afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
+        fc += (f"{chain}{bed}{st},volume={float(S['music_db'])}dB,afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
                "[m][key]sidechaincompress=threshold=0.05:ratio=6:attack=40:release=600[duck];"
                "[v][duck][s]amix=inputs=3:normalize=0:duration=first,")
     else:
