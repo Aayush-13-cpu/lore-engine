@@ -102,8 +102,8 @@ def chatterbox_engine(P, out):
     if ref:
         tts.prepare_conditionals(ref)
     whisper = WhisperModel("base.en", device="cpu", compute_type="int8")
+    import librosa  # installed with chatterbox; whisper gets arrays because its file reader breaks on newer PyAV
     respell = [(re.compile(rf"\b{re.escape(w)}\b", re.I), say) for w, say in P["pronounce"].items()]
-    probe = os.path.join(out, "_probe.wav")
 
     def say(text):
         spoken = text
@@ -113,8 +113,8 @@ def chatterbox_engine(P, out):
         for attempt in range(3):  # a take that skips or mangles words gets redone
             torch.manual_seed(zlib.crc32(text.encode()) + attempt)
             a = trim(tts.generate(spoken).squeeze(0).numpy().astype(np.float32))
-            sf.write(probe, a, SR)
-            segs, _ = whisper.transcribe(probe, language="en", word_timestamps=True)
+            segs, _ = whisper.transcribe(librosa.resample(a, orig_sr=SR, target_sr=16000), language="en",
+                                         word_timestamps=True)
             heard = [(w.word, w.start, w.end) for seg in segs for w in seg.words]
             words, ratio = align(text.split(), heard, len(a) / SR)
             if not best or ratio > best[2]:
