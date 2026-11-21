@@ -5,9 +5,10 @@ on:
     inputs:
       video_id: { description: "video_id from the Videos sheet", required: true, default: VID001 }
       scenes: { description: "only these scenes, e.g. 1-8 (blank = whole video)", default: "" }
-      draft: { description: "draft: placeholder art + real voice, ~10 min preview", type: boolean, default: false }
+      draft: { description: "draft: placeholder art + real voice, fast preview", type: boolean, default: false }
       shards: { description: "parallel image runners (1-20)", default: "18" }
 
+permissions: { contents: write } # finished videos are published as GitHub releases
 concurrency: { group: "render-${{ inputs.video_id }}", cancel-in-progress: false }
 env:
   PYTHONUNBUFFERED: "1"
@@ -16,7 +17,10 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    outputs: { shards: "${{ steps.plan.outputs.shards }}", ref_shards: "${{ steps.plan.outputs.ref_shards }}" }
+    outputs:
+      shards: "${{ steps.plan.outputs.shards }}"
+      ref_shards: "${{ steps.plan.outputs.ref_shards }}"
+      clip_shards: "${{ steps.plan.outputs.clip_shards }}"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,9 +34,10 @@ jobs:
           python - >> "$GITHUB_OUTPUT" <<'EOF'
           import json, os
           P = json.load(open("work/plan.json"))
-          cap = lambda n: list(range(max(1, min(int(os.environ["SHARDS"]), n, 20))))
-          print("shards=" + json.dumps(cap(len(P["images"]))))
-          print("ref_shards=" + json.dumps(cap(len(P["refs"]))))  # one runner per character
+          cap = lambda n, most: list(range(max(1, min(most, n))))
+          print("shards=" + json.dumps(cap(len(P["images"]), min(int(os.environ["SHARDS"]), 20))))
+          print("ref_shards=" + json.dumps(cap(len(P["refs"]), 20)))  # one runner per character
+          print("clip_shards=" + json.dumps(cap(len(P["scenes"]) // 10, 8)))  # ~10 scene clips per runner
           EOF
       - uses: actions/upload-artifact@v4
         with: { name: plan, path: work/plan.json, retention-days: 7 }
@@ -58,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: "refs-${{ matrix.shard }}", path: work/images, retention-days: 7, compression-level: 0 }
 
-  images:
+  images: # AI scene art + Real-ESRGAN upscales of real comic pages, spread over up to 20 runners
     needs: [plan, refs]
     if: ${{ !inputs.draft }}
     runs-on: ubuntu-26.04
@@ -86,6 +91,8 @@ jobs:
             work/images/s*.png
             work/images/s*.key
             work/images/thumb.*
+            work/images/page_*.png
+            work/images/page_*.key
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 0 # PNGs are already compressed
@@ -94,10 +101,13 @@ jobs:
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    env: { VOICE_CACHE: work/vcache }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
+      - uses: actions/cache/restore@v4 # narration from earlier renders: unchanged lines are not re-spoken
+        with: { path: work/vcache, key: "voice-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "voice-${{ inputs.video_id }}-" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: sudo apt-get update -q && sudo apt-get install -y -q espeak-ng
@@ -105,6 +115,8 @@ jobs:
           pip install -q torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -q chatterbox-tts==0.1.7 faster-whisper==1.2.1 kokoro==0.9.4 soundfile
       - run: python -m pipeline.voice work/plan.json work/audio
+      - uses: actions/cache/save@v4
+        with: { path: work/vcache, key: "voice-${{ inputs.video_id }}-${{ github.run_id }}" }
       - uses: actions/upload-artifact@v4
         with: { name: audio, path: work/audio, retention-days: 7 }
 
@@ -121,11 +133,13 @@ jobs:
       - uses: actions/cache/save@v4
         with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}" }
 
-  render:
+  clips: # scene clips (camera moves, comic pages, green screen) rendered across several runners at once
     needs: [plan, voice, images]
     if: ${{ !cancelled() && needs.voice.result == 'success' && (inputs.draft || needs.images.result == 'success') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 120
+    strategy:
+      matrix: { shard: "${{ fromJSON(needs.plan.outputs.clip_shards) }}" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -139,14 +153,82 @@ jobs:
       - uses: actions/download-artifact@v4
         if: ${{ !inputs.draft }}
         with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
+      - env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
+        run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID" "${{ matrix.shard }}/${{ strategy.job-total }}"
+      - uses: actions/upload-artifact@v4
+        with: { name: "clips-${{ matrix.shard }}", path: "out/${{ inputs.video_id }}/_work/clip???.mp4", retention-days: 1, compression-level: 0 }
+
+  shorts: # vertical Shorts render on their own runner, in parallel with the clips
+    needs: [plan, voice, images]
+    if: ${{ !cancelled() && needs.voice.result == 'success' && (inputs.draft || needs.images.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - uses: actions/download-artifact@v4
+        with: { name: audio, path: work/audio }
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.draft }}
+        with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
+      - env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
+        run: python -m pipeline.shorts work/plan.json work/images work/audio "out/$VIDEO_ID"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shorts
+          path: |
+            out/${{ inputs.video_id }}/shorts/
+            out/${{ inputs.video_id }}/shorts.json
+          retention-days: 1
+          compression-level: 0
+
+  render: # assemble: transitions, grade, mixed audio, captions, chapters, thumbnail -> release
+    needs: [plan, voice, images, clips, shorts]
+    if: ${{ !cancelled() && needs.clips.result == 'success' && needs.shorts.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - uses: actions/download-artifact@v4
+        with: { name: plan, path: work }
+      - uses: actions/download-artifact@v4
+        with: { name: audio, path: work/audio }
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.draft }}
+        with: { pattern: "{refs-*,img-*}", path: work/images, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "clips-*", path: "out/${{ inputs.video_id }}/_work", merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { name: shorts, path: "out/${{ inputs.video_id }}" }
       - name: Long-form video
         env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
         run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"
-      - name: Shorts
-        env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
-        run: python -m pipeline.shorts work/plan.json work/images work/audio "out/$VIDEO_ID"
       - name: Keep character refs for approval
         run: mkdir -p "out/$VIDEO_ID/refs" && cp work/images/ref_*.png "out/$VIDEO_ID/refs/" 2>/dev/null || true
+      - name: Publish as a GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: "${{ inputs.video_id }}-r${{ github.run_number }}${{ inputs.draft && '-draft' || '' }}"
+          PRE: "${{ inputs.draft && '--prerelease' || '' }}"
+        run: |
+          d="out/$VIDEO_ID"; rel=release; mkdir -p "$rel"
+          ln "$d/video.mp4" "$rel/$VIDEO_ID.mp4"
+          for f in thumbnail.jpg captions.srt description.txt metadata.json shorts.json; do
+            [ -f "$d/$f" ] && ln "$d/$f" "$rel/$VIDEO_ID-$f"
+          done
+          for f in "$d"/shorts/*.mp4; do [ -f "$f" ] && ln "$f" "$rel/$VIDEO_ID-$(basename "$f")"; done
+          title=$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['title'])" "$d/metadata.json")
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$VIDEO_ID: $title" --notes-file "$d/description.txt" $PRE "$rel"/*
+          echo "Release: $(gh release view "$TAG" --json url -q .url)" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.video_id }}-final

@@ -16,6 +16,7 @@ Lore Engine - make a video from the terminal (rendering runs on GitHub, not this
   ./lore.sh status              what is running and how far along it is
   ./lore.sh watch               follow the newest run and download it when it finishes
   ./lore.sh get VID001          download the newest finished result into out/VID001
+  ./lore.sh releases            finished videos published on GitHub (video, Shorts, thumbnail, captions)
 
 Ctrl-C while watching is safe: the render keeps going on GitHub.
 EOF
@@ -56,6 +57,7 @@ watch_run() { # $1 run id
   echo "Watching... (Ctrl-C is safe; resume later with ./lore.sh watch)"
   if gh run watch "$1" --interval 60 --exit-status >/dev/null; then
     get "$vid" "$1"
+    echo "Watch / share it on GitHub: $(gh release list --limit 1 --json tagName -q '.[0].tagName' | xargs -r gh release view --json url -q .url)"
   else
     gh run view "$1" --log-failed | tail -60
     echo "Failed. Fix the cause, then run the same command again (finished images are reused)."
@@ -79,6 +81,7 @@ case "${1:-help}" in
   status) need; status ;;
   watch) need; watch_run "$(latest)" ;;
   get) need; get "${2:?usage: ./lore.sh get VID001}" ;;
+  releases) need; gh release list --limit 10 && echo "https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases" ;;
   sheet) xdg-open content/lore_content.xlsx >/dev/null 2>&1 & ;;
   *) usage ;; # anything unknown only prints help: it never triggers a render
 esac

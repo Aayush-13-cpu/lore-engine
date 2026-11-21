@@ -9,6 +9,7 @@ usage: python -m pipeline.voice work/plan.json work/audio
 writes sNNN.wav / hookN.wav (24 kHz mono) + words.json {name: {dur, words: [[word, start, end], ...]}}
 """
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -128,16 +129,30 @@ def chatterbox_engine(P, out):
 
 def main(plan_path, out):
     P = json.load(open(plan_path))
+    S = P["settings"]
     os.makedirs(out, exist_ok=True)
-    engine = str(P["settings"].get("tts") or "chatterbox").strip().lower()
-    say = chatterbox_engine(P, out) if engine == "chatterbox" else kokoro_engine(P)
+    engine = str(S.get("tts") or "chatterbox").strip().lower()
+    ref = os.path.join("assets", "voice", str(S.get("voice_ref") or "").strip())
+    voice_id = [engine, hashlib.sha1(open(ref, "rb").read()).hexdigest() if os.path.isfile(ref) else
+                str(P["video"].get("voice") or S["voice"]), str(S.get("voice_speed")), P["pronounce"]]
+    cache = os.environ.get("VOICE_CACHE", "")  # earlier renders' narration (actions/cache): unchanged lines are reused
+    if cache:
+        os.makedirs(cache, exist_ok=True)
     lines = [(f"s{s['n']:03d}", s["narration"]) for s in P["scenes"]]
     lines += [(f"hook{h['n']}", h["hook_line"]) for h in P["shorts"] if h["hook_line"]]
-    meta = {}
+    say, meta = None, {}
     for name, text in lines:
         if not text:
             continue
-        audio, words = say(text)
+        hit = os.path.join(cache, hashlib.sha1(json.dumps(voice_id + [text]).encode()).hexdigest()[:16]) if cache else ""
+        if hit and os.path.exists(hit + ".json"):
+            audio, words = sf.read(hit + ".wav", dtype="float32")[0], json.load(open(hit + ".json"))
+        else:
+            say = say or (chatterbox_engine(P, out) if engine == "chatterbox" else kokoro_engine(P))  # load models lazily
+            audio, words = say(text)
+            if hit:
+                sf.write(hit + ".wav", audio, SR)
+                json.dump(words, open(hit + ".json", "w"))
         sf.write(f"{out}/{name}.wav", audio, SR)
         meta[name] = dict(dur=round(len(audio) / SR, 3), words=words)
         print(f"{name} {meta[name]['dur']:.1f}s {len(words)} words", flush=True)

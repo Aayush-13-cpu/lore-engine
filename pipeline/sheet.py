@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import zlib
 
 from openpyxl import load_workbook
 
@@ -81,7 +82,7 @@ def build(vid, subset="", path=SHEET):
     if not rows:
         sys.exit(f"no scenes for {vid} {subset}")
 
-    scenes, images, cast_ids = [], [], []
+    scenes, images, cast_ids, pages = [], [], [], {}
     have = set()  # scene numbers that produced images
     last_img = None
     for r in rows:
@@ -107,16 +108,24 @@ def build(vid, subset="", path=SHEET):
                 errors.append(f"scene {n}: {col} {s[col]!r} not one of {', '.join(sorted(a for a in allowed if a))}")
             if s[col] == "none":
                 s[col] = ""
-        if visual.lower().startswith("page:"):  # a real comic page, framed panel by panel
-            spec = visual[5:].strip()
-            m = PAGE.match(spec)
+        page = str(r.get("page", "")).strip()
+        if visual.lower().startswith("page:"):  # older form: the visual itself is the page
+            page, visual = visual[5:].strip(), ""
+        if page:  # a real comic page, framed panel by panel (alone, or before this row's AI shot)
+            m = PAGE.match(page)
             if not m:
-                errors.append(f"scene {n}: page visual must look like page:file.jpg#2 or page:https://...jpg@0.1,0.2,0.6,0.5")
+                errors.append(f"scene {n}: page must look like ff48_p05.jpg#2 or https://...jpg@0.1,0.2,0.6,0.5")
             elif not m.group(1).startswith(("http://", "https://")) and not os.path.exists(f"assets/pages/{m.group(1)}"):
                 errors.append(f"scene {n}: assets/pages/{m.group(1)} not found (or use a web link)")
-            s["page"], s["template"] = spec, "page"
+            else:
+                pages.setdefault(m.group(1), f"page_{zlib.crc32(m.group(1).encode()):08x}.png")
+            if tpl not in ("full", "page"):
+                errors.append(f"scene {n}: a comic page plays alone or before a 'full' AI shot, not with template {tpl}")
+            s["page"] = page
+        if page and not visual:
+            s["template"] = "page"
         elif tpl == "page":
-            errors.append(f"scene {n}: template page needs visual page:<file or link>[#panel]")
+            errors.append(f"scene {n}: template page needs a page (column 'page' or visual page:<file or link>#panel)")
         elif visual.lower().startswith("broll:"):
             s["broll"] = visual[6:].strip()
         elif visual:
@@ -151,6 +160,9 @@ def build(vid, subset="", path=SHEET):
             last_img = s["images"][0]
         scenes.append(s)
 
+    for src, name in pages.items():  # each real page gets fetched + Real-ESRGAN upscaled on an image runner
+        images.append(dict(name=name, src=src, prompt="", seed=0, refs=[]))
+
     if str(video.get("thumbnail_prompt", "")).strip():
         tids = [c for c in ids(video.get("thumbnail_characters", "")) if c in chars]
         images.append(dict(name="thumb.png", prompt=scene_prompt(style, video["thumbnail_prompt"], [chars[c] for c in tids]),
@@ -176,6 +188,7 @@ def build(vid, subset="", path=SHEET):
         characters={c: chars[c] for c in dict.fromkeys(cast_ids)},
         scenes=scenes, images=images, refs=refs, shorts=shorts,
         pronounce={str(p["word"]).strip(): str(p["say_as"]).strip() for p in T.get("Pronounce", []) if p.get("word")},
+        pages=pages,
     )
 
 

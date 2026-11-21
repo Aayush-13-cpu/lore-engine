@@ -18,7 +18,7 @@ from multiprocessing import Pool
 import cv2
 import numpy as np
 import soundfile as sf
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 from pipeline import comic
 from pipeline.sheet import TRANSITIONS
@@ -83,9 +83,11 @@ class Ctx:
         """Real comic page from assets/pages/ or a web link, plus its panel boxes in reading order."""
         src = spec.split("#")[0].split("@")[0]
         if src not in self.pages:
-            path = os.path.join("assets", "pages", src)
-            if src.startswith(("http://", "https://")):
-                path = fetch(src, os.path.join(self.work, f"page_{zlib.crc32(src.encode())}"))
+            path = os.path.join(self.imgdir, self.P.get("pages", {}).get(src, "-"))  # Real-ESRGAN copy from the runners
+            if not os.path.exists(path):
+                path = os.path.join("assets", "pages", src)
+                if src.startswith(("http://", "https://")):  # drafts skip the image runners: use the original
+                    path = fetch(src, os.path.join(self.work, f"page_{zlib.crc32(src.encode())}"))
             img = Image.open(path).convert("RGB")
             self.pages[src] = (img, panel_boxes(img))
         return self.pages[src]
@@ -132,6 +134,15 @@ def panel_boxes(img):
 
     cut(0, 0, w, h, 0, False)
     return out or [(0, 0, w, h)]
+
+
+def desk(w, h):
+    """Dark warm tabletop under a soft lamp (drawn small, scaled up: it is only a backdrop)."""
+    sw, sh = max(w // 4, 8), max(h // 4, 8)
+    yy, xx = np.mgrid[0:sh, 0:sw].astype(np.float32)
+    lum = 40 - 42 * np.hypot((xx - sw / 2) / sw, (yy - sh / 2) / sh) + np.random.default_rng(3).normal(0, 2.5, (sh, sw))
+    lum = np.clip(lum, 6, 60)[..., None] * np.float32([1.0, 0.92, 0.84])
+    return Image.fromarray(lum.astype(np.uint8)).resize((w, h), Image.BILINEAR)
 
 
 def page_focus(spec, boxes, pw, ph):
@@ -340,7 +351,10 @@ def build(s, tl, W, H, scale=1.0, captions=True):
         cw = max(pw * 1.06, ph * 1.06 * W / H)  # dark board in the frame's aspect, whole page visible at zoom 1
         ch = cw * H / W
         ox, oy = (cw - pw) / 2, (ch - ph) / 2
-        canvas = Image.new("RGB", (round(cw), round(ch)), (14, 15, 19))
+        canvas = desk(round(cw), round(ch))  # the page lies on a lamp-lit desk with a soft shadow, like a real book
+        shadow = Image.new("L", canvas.size, 0)
+        shadow.paste(175, (round(ox + 12), round(oy + 16), round(ox + pw + 12), round(oy + ph + 16)))
+        canvas.paste((0, 0, 0), mask=shadow.filter(ImageFilter.GaussianBlur(max(8, pw // 60))))
         canvas.paste(img, (round(ox), round(oy)))
 
         def frame_on(rect, push=1.0):  # camera key that fits a page rectangle with a little air around it
@@ -497,10 +511,21 @@ def render_scene(job):
              f"scale={C.W}:{C.H}:force_original_aspect_ratio=increase,crop={C.W}:{C.H},fps={C.fps},format=yuv420p",
              "-frames:v", str(n), "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", path])
     else:
-        canvas, over, keys, reveal = build(s, tl, C.W, C.H)
         lead = tl["Tf"] / 2 / C.fps
+        shots = [(s, tl, n, lead)]
+        if s.get("page") and s["template"] != "page" and n >= 2 * C.fps:
+            # both: the real panel first (the evidence), then a hard cut to the dramatized AI shot
+            n1 = min(max(round(n * 0.45), C.fps), n - C.fps)
+            evidence = dict(s, template="page", caption="", sfx_text="", fx="", sfx="")
+            shots = [(evidence, dict(tl, F=n1, out=0), n1, lead),
+                     (dict(s, sfx=""), dict(tl, Tf=0, F=n - n1, out=0, prev=None), n - n1, 0.0)]
+
+        def shot_frames():
+            for s2, tl2, count, ld in shots:
+                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H)
+                yield from frames(canvas, keys, count, C.W, C.H, over, s2, ld, reveal, seed)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
-        encode(frames(canvas, keys, n, C.W, C.H, over, s, lead, reveal, seed), dst, C.W, C.H)
+        encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
             greenscreen(dst, s["template"][3:], n, path)
     return s["n"]
@@ -660,7 +685,19 @@ def chapters(tls, fps):
     return out if ok else []
 
 
-def main(plan_path, imgdir, audiodir, outdir):
+def my_clips(todo, shard):
+    """'K/N': this runner's share of the clips, longest first onto the least-loaded runner (same split on every runner)."""
+    k, n = map(int, shard.split("/"))
+    load, mine = [0] * n, []
+    for tl, c in sorted(todo, key=lambda x: (-x[0]["F"], x[0]["i"])):
+        j = load.index(min(load))
+        load[j] += tl["F"]
+        if j == k:
+            mine.append((tl, c))
+    return mine
+
+
+def main(plan_path, imgdir, audiodir, outdir, shard=""):
     P = json.load(open(plan_path))
     meta = json.load(open(os.path.join(audiodir, "words.json")))
     work = os.path.join(outdir, "_work")
@@ -668,13 +705,18 @@ def main(plan_path, imgdir, audiodir, outdir):
     init(P, imgdir, work)
     V, S, fps = P["video"], P["settings"], C.fps
     tls = timeline(P, meta, fps)
-    for s in P["scenes"]:  # fetch + analyse each comic page once here, not in every worker
-        if s.get("page"):
-            C.page(s["page"])
     clips = [os.path.join(work, f"clip{tl['i']:03d}.mp4") for tl in tls]
+    todo = [(tl, c) for tl, c in zip(tls, clips) if not os.path.exists(c)]  # clips from parallel runners are kept
+    if shard:
+        todo = my_clips(todo, shard)
+    for tl, _ in todo:  # fetch + analyse each comic page once here, not in every worker
+        if tl["s"].get("page"):
+            C.page(tl["s"]["page"])
     with Pool(max(1, (os.cpu_count() or 2) // 2), initializer=init, initargs=(P, imgdir, work)) as pool:
-        for done, n in enumerate(pool.imap_unordered(render_scene, zip(tls, clips)), 1):
-            print(f"scene {n} rendered ({done}/{len(tls)})", flush=True)
+        for done, n in enumerate(pool.imap_unordered(render_scene, todo), 1):
+            print(f"scene {n} rendered ({done}/{len(todo)})", flush=True)
+    if shard:
+        return print(f"clip shard {shard}: {len(todo)} clips")
     total = sum(tl["F"] for tl in tls) / fps
     voice, sfx = tracks(tls, audiodir, total, fps)
     mixed = os.path.join(work, "mix.wav")
@@ -747,4 +789,4 @@ def _selfcheck():
 
 if __name__ == "__main__":
     _selfcheck()
-    main(*sys.argv[1:5])
+    main(*sys.argv[1:6])

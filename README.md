@@ -20,6 +20,7 @@ render: comic print pass ► camera moves ► ffmpeg transitions / green screen 
 ./lore.sh status              #    what is running and how far along
 ./lore.sh watch               #    follow the newest run, download when done
 ./lore.sh get VID001          #    download the newest finished result
+./lore.sh releases            #    every finished video, published on GitHub Releases
 ```
 
 Results land in `out/VID001/`. Upload `video.mp4`, `thumbnail.jpg` and `captions.srt`, and paste `description.txt`
@@ -50,13 +51,13 @@ Settings (voice, loudness, print look, Shorts length, channel name) live in the 
 
 ## Explaining real comic pages (sliding window)
 
-Put `page:` in a scene's **visual**, using a file in `assets/pages/` or a web link:
+Use the **page** column (last column of Scenes), with a file in `assets/pages/` or a web link. With a visual as well, the line opens on the real panel and then cuts to the AI shot (evidence, then drama); with no visual, the page plays alone. Pages are upscaled 4x with Real-ESRGAN on the runners:
 
 | visual | What the camera does |
 | --- | --- |
-| `page:ff48_p05.jpg` | Shows the whole page |
-| `page:ff48_p05.jpg#2` | Slides to panel 2 and spotlights it (panels are detected automatically) |
-| `page:https://site/page.jpg@0.1,0.2,0.6,0.5` | Frames any box by hand (fractions of the page) |
+| `ff48_p05.jpg` | Shows the whole page |
+| `ff48_p05.jpg#2` | Slides to panel 2 and spotlights it (panels are detected automatically) |
+| `https://site/page.jpg@0.1,0.2,0.6,0.5` | Frames any box by hand (fractions of the page) |
 
 Give each panel its own row and narration. Consecutive rows on the same page glide from panel to panel with no cut.
 Run a draft first to check the framing. Public-domain comics (Digital Comic Museum, Comic Book Plus, Wikimedia

@@ -73,8 +73,33 @@ def keyfile(path):
     return path[:-4] + ".key"
 
 
+def page_job(exe, env, j, dst):
+    """Real comic page: fetch, Real-ESRGAN 4x when the scan is small, cap at 4096 px so panel close-ups stay crisp."""
+    from PIL import Image
+    tmp = os.path.join(M, "pagetmp")
+    os.makedirs(tmp, exist_ok=True)
+    raw, src = os.path.join(tmp, "raw"), j["src"]
+    if src.startswith(("http://", "https://")):
+        ua = f"lore-engine/1.0 (+https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'lore-engine')})"
+        subprocess.run(["curl", "-fsSL", "--retry", "4", "-A", ua, "-o", raw, src], check=True)
+    else:
+        shutil.copy(os.path.join("assets", "pages", src), raw)
+    im = Image.open(raw).convert("RGB")  # PIL reads jpg/png/webp; sd-cli gets a clean png
+    if max(im.size) < 2600:
+        im.save(os.path.join(tmp, "in.png"))
+        subprocess.run([exe, "-M", "upscale", "-i", os.path.join(tmp, "in.png"), "--upscale-model", f"{M}/up.pth",
+                        "-o", os.path.join(tmp, "up.png"), "-t", str(os.cpu_count())], env=env, check=True)
+        im = Image.open(os.path.join(tmp, "up.png")).convert("RGB")
+    im.thumbnail((4096, 4096), Image.LANCZOS)
+    im.save(dst)
+
+
 def image_key(j, S, out):
     """Everything that changes the picture; an unchanged key means a cached image can be reused as-is."""
+    if j.get("src"):
+        local = os.path.join("assets", "pages", j["src"])
+        ident = hashlib.sha1(open(local, "rb").read()).hexdigest() if os.path.exists(local) else j["src"]
+        return hashlib.sha1(json.dumps([ident, "esrgan4x-4096", FILES["up.pth"]]).encode()).hexdigest()[:16]
     if j.get("asset") and os.path.exists(j["asset"]):
         return hashlib.sha1(open(j["asset"], "rb").read()).hexdigest()[:16]
     refs = [open(keyfile(os.path.join(out, r))).read() for r in j["refs"]]  # a new face re-draws its scenes
@@ -110,12 +135,21 @@ def main(plan_path, phase, shard, nshards, out):
     w, h = int(float(S["image_width"])), int(float(S["image_height"]))
     if phase == "refs":
         w, h = min(w, h), max(w, h)
+    gen = any(not j.get("src") for j in todo)  # a shard holding only comic pages skips the 9 GB diffusion models
+    need = ["sd.zip"] + (["dit.gguf", "llm.gguf", "vae.safetensors"] if gen else [])
+    need += ["up.pth"] if (upscale and gen) or any(j.get("src") for j in todo) else []
     with ThreadPoolExecutor(5) as ex:
-        list(ex.map(fetch, [f for f in FILES if f != "up.pth" or upscale]))
+        list(ex.map(fetch, need))
     exe = sd_cli()
     env = dict(os.environ, LD_LIBRARY_PATH=os.path.dirname(exe))
     for i, j in enumerate(todo):
         dst = os.path.join(out, j["name"])
+        if j.get("src"):
+            t = time.time()
+            page_job(exe, env, j, dst)
+            open(keyfile(dst), "w").write(image_key(j, S, out))
+            print(f"[{i + 1}/{len(todo)}] {j['name']} (comic page) {time.time() - t:.0f}s", flush=True)
+            continue
         cmd = [exe, "--diffusion-model", f"{M}/dit.gguf", "--vae", f"{M}/vae.safetensors", "--llm", f"{M}/llm.gguf",
                "--cfg-scale", "1.0", "--sampling-method", "euler", "--steps", str(int(float(S["image_steps"]))),
                "-W", str(w), "-H", str(h),
