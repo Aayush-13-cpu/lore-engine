@@ -35,7 +35,7 @@ def ocr(panel, tmp):
         tokens = r.stdout.split()
         words = [t for t in tokens if wordlike(t)]
         text = " ".join(words)
-        if len(words) >= 2 and len(words) >= 0.6 * len(tokens) and not any(text in f for _, _, f in found):
+        if len(words) >= 3 and len(words) >= 0.4 * len(tokens) and not any(text in f for _, _, f in found):
             found = [f for f in found if f[2] not in text] + [(y, x, text)]  # keep the longest of overlapping reads
     return " / ".join(t for _, _, t in sorted(found))  # top-to-bottom, left-to-right reading order
 
