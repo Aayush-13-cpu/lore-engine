@@ -10,6 +10,7 @@ usage() {
 Lore Engine - make a video from the terminal (rendering runs on GitHub, not this laptop)
 
   ./lore.sh sheet               open the content sheet to write a video
+  ./lore.sh storyboard VID001   read the video's real comics: numbered panels + lettering + ready Scenes rows
   ./lore.sh draft  VID001       fast preview: real voice + placeholder art (~15-20 min)
   ./lore.sh render VID001       full video + Shorts + thumbnail (first time ~2 h; re-renders reuse cached images)
   ./lore.sh render VID001 1-8   only scenes 1-8
@@ -65,11 +66,27 @@ watch_run() { # $1 run id
   fi
 }
 
-start() { # $1 video id, $2 scenes, $3 draft true/false
+push_sheet() {
   need
   git add content assets
   git diff --cached --quiet || git commit -qm "content: $1"
   git push -q
+}
+
+storyboard() { # $1 video id: numbered panels + OCR lettering + Scenes rows for every page of its Sources
+  push_sheet "$1"
+  gh workflow run storyboard.yml -f video_id="$1"
+  sleep 8
+  local run; run=$(gh run list --workflow storyboard.yml --limit 1 --json databaseId -q '.[0].databaseId')
+  echo "Storyboard run $run: $(gh run view "$run" --json url -q .url)"
+  gh run watch "$run" --interval 30 --exit-status >/dev/null || { gh run view "$run" --log-failed | tail -40; exit 1; }
+  rm -rf "out/${1:?}/storyboard"
+  gh run download "$run" -n "$1-storyboard" -D "out/$1/storyboard"
+  echo "Done -> out/$1/storyboard: one image per page with numbered panels + storyboard.xlsx (rows to paste into Scenes)"
+}
+
+start() { # $1 video id, $2 scenes, $3 draft true/false
+  push_sheet "$1"
   gh workflow run "$WF" -f video_id="$1" -f scenes="$2" -f draft="$3"
   sleep 8 # shortcut: assumes the newest run is ours; fine for one person triggering renders
   watch_run "$(latest)"
@@ -78,6 +95,7 @@ start() { # $1 video id, $2 scenes, $3 draft true/false
 case "${1:-help}" in
   render) start "${2:?usage: ./lore.sh render VID001 [1-8]}" "${3:-}" false ;;
   draft) start "${2:?usage: ./lore.sh draft VID001}" "" true ;;
+  storyboard) storyboard "${2:?usage: ./lore.sh storyboard VID001}" ;;
   status) need; status ;;
   watch) need; watch_run "$(latest)" ;;
   get) need; get "${2:?usage: ./lore.sh get VID001}" ;;

@@ -30,6 +30,25 @@ Results land in `out/VID001/`. Upload `video.mp4`, `thumbnail.jpg` and `captions
 Your laptop only needs `git` and the GitHub CLI (`gh auth login`). All rendering happens on GitHub Actions.
 No terminal? **GitHub → Actions → render → Run workflow**, then download the `VID001-final` artifact.
 
+## Real comics first (v3)
+
+Real panels carry the characters; AI draws only what the comics never showed (aim ~60% real / 40% AI).
+
+1. **Keep your comics private.** Create a *private* GitHub repo (e.g. `lore-assets`) holding your own DRM-free
+   copies (cbz / cbr / pdf / folders of images). In this repo: *Settings → Secrets and variables → Actions* →
+   variable `ASSETS_REPO` = `you/lore-assets`, secret `ASSETS_TOKEN` = a token with read access to it.
+   Runners check it out to `private/`; nothing copyrighted ever enters this public repo.
+2. **List them** in the **Sources** tab: `FF48` → `comics/ff48.cbz`.
+3. **Storyboard:** `./lore.sh storyboard VID001` returns every page with numbered panels, the lettering read by
+   OCR, and `storyboard.xlsx` rows (page `FF48:5#2` filled in) to paste into Scenes. You write the narration.
+4. **Build the beat:** `issue` card (cover + details) → page walk (`FF48:5`, `FF48:5#1`, `#2`...) → AI
+   dramatization (visual prompt) → panel + AI in one line (page *and* visual).
+5. **On-model AI:** set Characters → `ref_page` to a box around the character on a real page
+   (`FF48:12@0.1,0.2,0.5,0.9`); AI shots then copy the true design.
+
+Runner compute that used to draw AI images now upscales pages (Real-ESRGAN), adds 2.5D depth parallax
+(Depth-Anything-V2-Small) to real panels and AI art, and redraws AI images with stray panel borders.
+
 ## Keeping characters consistent
 
 The first render generates a reference image per character (`out/VID001/refs/ref_GALACTUS.png`) and feeds it to every

@@ -14,6 +14,10 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
+import sources  # pipeline/ is on the path: this file runs as a script
+
+SOURCES = {}  # Sources sheet {id: location}, set from the plan in main()
+
 M = os.environ.get("MODELS_DIR", "models")
 HF = "https://huggingface.co/"
 FILES = {
@@ -73,18 +77,30 @@ def keyfile(path):
     return path[:-4] + ".key"
 
 
+def has_gutter(path):
+    """True when a thin band of mostly near-white pixels crosses the art: a panel gutter the model drew
+    (art in front may interrupt it, so it counts bright pixels rather than demanding a flat line)."""
+    from PIL import Image, ImageStat
+    im = Image.open(path).convert("L")
+    im.thumbnail((512, 512))
+    im = im.point(lambda v: 255 if v > 185 else 0)
+    w, h = im.size
+    for size, line in ((h, lambda i: (w // 20, i, w - w // 20, i + 1)), (w, lambda i: (i, h // 20, i + 1, h - h // 20))):
+        run = 0
+        for i in range(int(size * .05), int(size * .95)):
+            flat = ImageStat.Stat(im.crop(line(i))).mean[0] >= 0.85 * 255
+            if not flat and 0 < run <= size * .06:  # thin flat band = gutter; a wide one is just a pale sky
+                return True
+            run = run + 1 if flat else 0
+    return False
+
+
 def page_job(exe, env, j, dst):
     """Real comic page: fetch, Real-ESRGAN 4x when the scan is small, cap at 4096 px so panel close-ups stay crisp."""
     from PIL import Image
     tmp = os.path.join(M, "pagetmp")
     os.makedirs(tmp, exist_ok=True)
-    raw, src = os.path.join(tmp, "raw"), j["src"]
-    if src.startswith(("http://", "https://")):
-        ua = f"lore-engine/1.0 (+https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'lore-engine')})"
-        subprocess.run(["curl", "-fsSL", "--retry", "4", "-A", ua, "-o", raw, src], check=True)
-    else:
-        shutil.copy(os.path.join("assets", "pages", src), raw)
-    im = Image.open(raw).convert("RGB")  # PIL reads jpg/png/webp; sd-cli gets a clean png
+    im = Image.open(sources.page_image(j["src"], SOURCES, tmp)).convert("RGB")  # PIL reads jpg/png/webp
     if max(im.size) < 2600:
         im.save(os.path.join(tmp, "in.png"))
         subprocess.run([exe, "-M", "upscale", "-i", os.path.join(tmp, "in.png"), "--upscale-model", f"{M}/up.pth",
@@ -96,10 +112,9 @@ def page_job(exe, env, j, dst):
 
 def image_key(j, S, out):
     """Everything that changes the picture; an unchanged key means a cached image can be reused as-is."""
-    if j.get("src"):
-        local = os.path.join("assets", "pages", j["src"])
-        ident = hashlib.sha1(open(local, "rb").read()).hexdigest() if os.path.exists(local) else j["src"]
-        return hashlib.sha1(json.dumps([ident, "esrgan4x-4096", FILES["up.pth"]]).encode()).hexdigest()[:16]
+    if j.get("src") or j.get("crop"):  # real comic art: keyed on where it comes from, not on a prompt
+        return hashlib.sha1(json.dumps([j.get("src") or j["crop"], SOURCES, "esrgan4x-4096", FILES["up.pth"]],
+                                       sort_keys=True).encode()).hexdigest()[:16]
     if j.get("asset") and os.path.exists(j["asset"]):
         return hashlib.sha1(open(j["asset"], "rb").read()).hexdigest()[:16]
     refs = [open(keyfile(os.path.join(out, r))).read() for r in j["refs"]]  # a new face re-draws its scenes
@@ -110,6 +125,7 @@ def image_key(j, S, out):
 
 def main(plan_path, phase, shard, nshards, out):
     P = json.load(open(plan_path))
+    SOURCES.update(P.get("sources", {}))
     S = P["settings"]
     cache = os.environ.get("IMAGE_CACHE", "")  # previous renders' images (actions/cache)
     os.makedirs(out, exist_ok=True)
@@ -120,6 +136,12 @@ def main(plan_path, phase, shard, nshards, out):
         hit = os.path.join(cache, j["name"]) if cache else ""
         if j.get("asset") and os.path.exists(j["asset"]):
             shutil.copy(j["asset"], dst)  # approved reference image wins over generation
+        elif j.get("crop"):  # reference cut from a real comic panel: on-model, nothing generated
+            from PIL import Image
+            ref, box = j["crop"].split("@")
+            im = Image.open(sources.page_image(ref, SOURCES, os.path.join(M, "pagetmp"))).convert("RGB")
+            x0, y0, x1, y1 = map(float, box.split(","))
+            im.crop((round(x0 * im.width), round(y0 * im.height), round(x1 * im.width), round(y1 * im.height))).save(dst)
         elif hit and os.path.exists(keyfile(hit)) and open(keyfile(hit)).read() == key:
             shutil.copy(hit, dst)
             print(f"cached {j['name']}")
@@ -150,21 +172,25 @@ def main(plan_path, phase, shard, nshards, out):
             open(keyfile(dst), "w").write(image_key(j, S, out))
             print(f"[{i + 1}/{len(todo)}] {j['name']} (comic page) {time.time() - t:.0f}s", flush=True)
             continue
-        cmd = [exe, "--diffusion-model", f"{M}/dit.gguf", "--vae", f"{M}/vae.safetensors", "--llm", f"{M}/llm.gguf",
-               "--cfg-scale", "1.0", "--sampling-method", "euler", "--steps", str(int(float(S["image_steps"]))),
-               "-W", str(w), "-H", str(h),
-               "-s", str(j["seed"]), "-p", j["prompt"], "-o", dst + ".tmp.png", "-t", str(os.cpu_count()), "--flash-attn", "on"]
-        for r in j["refs"]:
-            cmd += ["-r", small_ref(os.path.join(out, r))]
-        if upscale:
-            cmd += ["--upscale-model", f"{M}/up.pth"]
         t = time.time()
-        for attempt in (1, 2):  # one retry for flaky OOM/IO; a second failure fails the job loudly
-            if subprocess.run(cmd, env=env).returncode == 0:
+        for take in range(3):  # quality gate: a take with a stray panel border/gutter is redrawn with a new seed
+            cmd = [exe, "--diffusion-model", f"{M}/dit.gguf", "--vae", f"{M}/vae.safetensors", "--llm", f"{M}/llm.gguf",
+                   "--cfg-scale", "1.0", "--sampling-method", "euler", "--steps", str(int(float(S["image_steps"]))),
+                   "-W", str(w), "-H", str(h), "-s", str(j["seed"] + 1000 * take), "-p", j["prompt"],
+                   "-o", dst + ".tmp.png", "-t", str(os.cpu_count()), "--flash-attn", "on"]
+            for r in j["refs"]:
+                cmd += ["-r", small_ref(os.path.join(out, r))]
+            if upscale:
+                cmd += ["--upscale-model", f"{M}/up.pth"]
+            for attempt in (1, 2):  # one retry for flaky OOM/IO; a second failure fails the job loudly
+                if subprocess.run(cmd, env=env).returncode == 0:
+                    break
+                if attempt == 2:
+                    sys.exit(f"sd-cli failed twice on {j['name']}")
+            os.replace(dst + ".tmp.png", dst)
+            if phase == "refs" or not has_gutter(dst):
                 break
-            if attempt == 2:
-                sys.exit(f"sd-cli failed twice on {j['name']}")
-        os.replace(dst + ".tmp.png", dst)
+            print(f"  {j['name']}: stray panel border, redrawing (take {take + 2})", flush=True)
         open(keyfile(dst), "w").write(image_key(j, S, out))
         print(f"[{i + 1}/{len(todo)}] {j['name']} {time.time() - t:.0f}s", flush=True)
 

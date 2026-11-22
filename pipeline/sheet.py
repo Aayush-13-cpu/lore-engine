@@ -11,8 +11,10 @@ import zlib
 
 from openpyxl import load_workbook
 
+from pipeline.sources import ISSUE, locate
+
 SHEET = "content/lore_content.xlsx"
-TEMPLATES = {"full", "panels", "split", "dossier", "title", "sting", "quote", "endscreen", "page"}
+TEMPLATES = {"full", "panels", "split", "dossier", "title", "sting", "quote", "endscreen", "page", "issue"}
 PAGE = re.compile(r"^(\S+?)(#\d+|@[\d.]+,[\d.]+,[\d.]+,[\d.]+)?$")  # file-or-url [#panel | @x0,y0,x1,y1]
 NEEDS_IMAGE = {"full", "panels", "split"}  # other templates use an image only as backdrop
 TRANSITIONS = {"auto", "cut", "fade", "dissolve", "black", "flash", "whip", "glitch", "zoom", "circle", "wipe", "slide", "radial"}
@@ -24,7 +26,7 @@ DEFAULTS = dict(
     channel_name="LORE VAULT", fps=30, width=1920, height=1080,
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
     tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
-    scene_pad=0.3, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5,
+    scene_pad=0.3, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
     shorts_count=3, shorts_min=25, shorts_max=58, watermark="yes",
 )
 
@@ -56,9 +58,11 @@ def ids(v):
 
 
 def scene_prompt(style, visual, cast):
-    refs = " ".join(f"Image {i + 1} shows {c['name']}; keep that exact character design." for i, c in enumerate(cast[:2]))
-    looks = " ".join(f"{c['name']}: {c['look']}." for c in cast)
-    return " ".join(x for x in (style["prompt_prefix"], refs, f"{visual}.", looks, style["prompt_suffix"]) if x)
+    refs = " ".join(f"Image {i + 1} is the official look of {c['name']}: copy that exact costume, colors and face."
+                    for i, c in enumerate(cast[:2]))
+    looks = " ".join(f"{c['name']} drawn exactly on-model: {c['look']}." for c in cast)
+    frame = "One single full-bleed illustration filling the frame edge to edge: no panel borders, no gutters, no inset panels."
+    return " ".join(x for x in (style["prompt_prefix"], refs, f"{visual}.", looks, frame, style["prompt_suffix"]) if x)
 
 
 def build(vid, subset="", path=SHEET):
@@ -75,6 +79,22 @@ def build(vid, subset="", path=SHEET):
     if not GRADE_OK.match(str(style.get("grade", ""))):
         errors.append(f"style {style['style_id']}: grade must be plain ffmpeg filters like eq=contrast=1.05:saturation=1.1")
     chars = {str(c["char_id"]).strip().upper(): c for c in T["Characters"]}
+    srcs = {str(x["source_id"]).strip(): str(x["location"]).strip()
+            for x in T.get("Sources", []) if str(x.get("source_id", "")).strip()}
+
+    def source_problem(ref):  # why a page reference can't be found, or None
+        im = ISSUE.match(ref)
+        if ref in srcs:  # a Sources row holding a single page
+            ref = srcs[ref]
+        if im:
+            if im.group(1) not in srcs:
+                return f"source {im.group(1)} is not in the Sources sheet"
+            loc = srcs[im.group(1)]
+            if not loc.startswith(("http://", "https://")) and not locate(loc):
+                return f"source {im.group(1)}: {loc} not found in private/ (is ASSETS_REPO set up?) or assets/sources/"
+        elif not ref.startswith(("http://", "https://")) and not locate(ref):
+            return f"page {ref} not found in private/pages/ or assets/pages/ (or use a web link / Sources id)"
+        return None
     rows = sorted((s for s in T["Scenes"] if str(s["video_id"]).strip() == vid), key=lambda s: num(s["scene"]))
     if subset:
         a, _, b = subset.partition("-")
@@ -115,16 +135,16 @@ def build(vid, subset="", path=SHEET):
             m = PAGE.match(page)
             if not m:
                 errors.append(f"scene {n}: page must look like ff48_p05.jpg#2 or https://...jpg@0.1,0.2,0.6,0.5")
-            elif not m.group(1).startswith(("http://", "https://")) and not os.path.exists(f"assets/pages/{m.group(1)}"):
-                errors.append(f"scene {n}: assets/pages/{m.group(1)} not found (or use a web link)")
+            elif source_problem(m.group(1)):
+                errors.append(f"scene {n}: {source_problem(m.group(1))}")
             else:
                 pages.setdefault(m.group(1), f"page_{zlib.crc32(m.group(1).encode()):08x}.png")
-            if tpl not in ("full", "page"):
+            if tpl not in ("full", "page", "issue"):
                 errors.append(f"scene {n}: a comic page plays alone or before a 'full' AI shot, not with template {tpl}")
             s["page"] = page
         if page and not visual:
-            s["template"] = "page"
-        elif tpl == "page":
+            s["template"] = "issue" if tpl == "issue" else "page"
+        elif tpl in ("page", "issue"):
             errors.append(f"scene {n}: template page needs a page (column 'page' or visual page:<file or link>#panel)")
         elif visual.lower().startswith("broll:"):
             s["broll"] = visual[6:].strip()
@@ -172,8 +192,14 @@ def build(vid, subset="", path=SHEET):
     refs = []
     for c in dict.fromkeys(cast_ids):
         ch = chars[c]
+        crop = str(ch.get("ref_page", "")).strip()  # e.g. FF48:3@0.1,0.2,0.5,0.9 : the face cut from a real panel
+        mc = PAGE.match(crop) if crop else None
+        if crop and (not mc or not (mc.group(2) or "").startswith("@") or source_problem(mc.group(1))):
+            errors.append(f"character {c}: ref_page must be <page>@x0,y0,x1,y1 on an existing page "
+                          f"({source_problem(mc.group(1)) if mc else 'bad format'})")
         refs.append(dict(
             name=f"ref_{c}.png", asset=f"assets/characters/{c}.png", seed=int(num(ch.get("seed"), seed(c))), refs=[],
+            crop=crop,
             prompt=f"{style['prompt_prefix']} Character reference sheet of {ch['name']}: {ch['look']}. Single full figure, "
                    f"three-quarter view, standing, plain light grey studio background, even lighting. {style['prompt_suffix']}"))
 
@@ -188,7 +214,7 @@ def build(vid, subset="", path=SHEET):
         characters={c: chars[c] for c in dict.fromkeys(cast_ids)},
         scenes=scenes, images=images, refs=refs, shorts=shorts,
         pronounce={str(p["word"]).strip(): str(p["say_as"]).strip() for p in T.get("Pronounce", []) if p.get("word")},
-        pages=pages,
+        pages=pages, sources=srcs,
     )
 
 

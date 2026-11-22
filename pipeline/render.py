@@ -20,7 +20,7 @@ import numpy as np
 import soundfile as sf
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
-from pipeline import comic
+from pipeline import comic, sources
 from pipeline.sheet import TRANSITIONS
 
 SR = 48000
@@ -31,6 +31,9 @@ XFADE = {  # sheet name -> (ffmpeg xfade transition, seconds); transitions are s
     "flash": ("fadewhite", 0.4), "whip": ("slideleft", 0.3), "glitch": ("pixelize", 0.35), "zoom": ("zoomin", 0.45),
     "circle": ("circleopen", 0.6), "wipe": ("wipeleft", 0.45), "slide": ("slideup", 0.4), "radial": ("radial", 0.6),
 }
+DEPTH_URL = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx"
+DEPTH = None  # per-process ONNX session, loaded on first use
+PARALLAX = {"full", "page", "issue"}  # templates whose picture gets depth layers (gs:* too)
 PAUSE = {"?": 1.5, "!": 1.4, ".": 1.2, ";": 0.8, ":": 0.8, ",": 0.45}  # breath after a line, by how it ends
 assert set(XFADE) | {"auto"} == TRANSITIONS
 AUTO_T = ["fade", "cut", "whip", "cut", "dissolve", "cut", "zoom", "cut"]  # mostly cuts: flashy-every-scene reads amateur
@@ -84,10 +87,8 @@ class Ctx:
         src = spec.split("#")[0].split("@")[0]
         if src not in self.pages:
             path = os.path.join(self.imgdir, self.P.get("pages", {}).get(src, "-"))  # Real-ESRGAN copy from the runners
-            if not os.path.exists(path):
-                path = os.path.join("assets", "pages", src)
-                if src.startswith(("http://", "https://")):  # drafts skip the image runners: use the original
-                    path = fetch(src, os.path.join(self.work, f"page_{zlib.crc32(src.encode())}"))
+            if not os.path.exists(path):  # drafts skip the image runners: use the original page
+                path = sources.page_image(src, self.P.get("sources", {}), self.work)
             img = Image.open(path).convert("RGB")
             self.pages[src] = (img, panel_boxes(img))
         return self.pages[src]
@@ -188,8 +189,9 @@ def timeline(P, meta, fps, pad=None):
         tr = s["transition"]
         if tr == "auto":
             same_page = prev and page_file(s) and page_file(s) == page_file(prev)  # camera slides on, no cut visible
+            new_page = prev and page_file(s) and page_file(prev) and not same_page
             tr = "cut" if i == 0 or same_page else "black" if s["chapter"] != chapter or s["template"] in ("title", "sting") \
-                else AUTO_T[i % len(AUTO_T)]
+                else "whip" if new_page else AUTO_T[i % len(AUTO_T)]  # whip between pages reads as a page turn
         Tf = 0 if i == 0 else max(1, round(XFADE[tr][1] * fps))
         m = meta.get(voice_key(s))
         speech = m["dur"] if m else 0.0
@@ -345,6 +347,19 @@ def build(s, tl, W, H, scale=1.0, captions=True):
         keys = sorted(keys) + [(1, 1.02, .5, .5)]
     elif tpl == "split":
         canvas = comic.split(imgs[0], imgs[-1], (s["caption"].split("|") + ["", ""])[:2], acc, cw, ch, k)
+    elif tpl == "issue":  # the real cover on the desk, details beside it: caption "FANTASTIC FOUR #48|MARCH 1966|LEE & KIRBY"
+        cover = C.page(s["page"])[0]
+        canvas = desk(cw, ch)
+        cover = cover.resize((round(ch * .8 * cover.width / cover.height), round(ch * .8)), Image.LANCZOS)
+        x, y = round(cw * .12), round(ch * .1)
+        shadow = Image.new("L", canvas.size, 0)
+        shadow.paste(170, (x + 14, y + 18, x + cover.width + 14, y + cover.height + 18))
+        canvas.paste((0, 0, 0), mask=shadow.filter(ImageFilter.GaussianBlur(14)))
+        canvas.paste(cover, (x, y))
+        parts = (s["caption"].split("|") + ["", "", ""])[:3]
+        if W >= H:
+            over.append(prep(comic.card_text("issue", W, H, acc, title=parts[0], kicker=parts[1], text=parts[2]), 0, 0, lead + 0.3))
+        keys = [(0, 1.0, .5, .5), (1, 1.07, .44, .5)]
     elif tpl == "page":
         img, boxes = C.page(s["page"])
         pw, ph = img.size
@@ -389,7 +404,7 @@ def build(s, tl, W, H, scale=1.0, captions=True):
             kw = dict(title=s["caption"])
         if W >= H:  # card text is laid out for landscape
             over.append(prep(comic.card_text(tpl, W, H, acc, **kw), 0, 0, lead + 0.1))
-    if captions and s["caption"] and tpl not in CARDS | {"split"}:
+    if captions and s["caption"] and tpl not in CARDS | {"split", "issue"}:
         over.append(prep(comic.caption_box(s["caption"], st.get("caption_bg") or "#F6E27A", st.get("caption_fg") or "#111111"),
                          60, 50, lead + 0.3))
     if s["sfx_text"]:
@@ -400,10 +415,28 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR), [o for o in over if o], keys, reveal
 
 
-def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0):
+def depth_of(canvas):
+    """Near=1 / far=0 depth at 1/4 canvas size from Depth-Anything-V2-Small (Apache-2.0, ONNX on CPU)."""
+    global DEPTH
+    if DEPTH is None:
+        import onnxruntime
+        DEPTH = onnxruntime.InferenceSession(fetch(DEPTH_URL, os.path.join(C.work, "depth.onnx")),
+                                             providers=["CPUExecutionProvider"])
+    x = cv2.resize(canvas, (518, 518), interpolation=cv2.INTER_AREA)[..., ::-1].astype(np.float32) / 255
+    x = ((x - np.float32([.485, .456, .406])) / np.float32([.229, .224, .225])).transpose(2, 0, 1)[None]
+    d = DEPTH.run(None, {DEPTH.get_inputs()[0].name: x.astype(np.float32)})[0].squeeze().astype(np.float32)
+    d = (d - d.min()) / (d.max() - d.min() + 1e-6)
+    h, w = canvas.shape[:2]
+    return cv2.GaussianBlur(cv2.resize(d, (max(w // 4, 1), max(h // 4, 1))), (0, 0), 2)
+
+
+def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0, depth=None):
     fps = C.fps
     ch_, cw_ = canvas.shape[:2]
     base = max(W / cw_, H / ch_)
+    if depth is not None:  # 2.5D parallax: near layers drift against far ones, opposite to the camera's pan
+        gy, gx = np.mgrid[0:H, 0:W].astype(np.float32)
+        amp = float(C.S.get("parallax", 14)) * (-1 if interp(keys, 1)[1] > interp(keys, 0)[1] else 1)
     fx = s["fx"] if s else ""
     parts = particles(fx, W, H, seed) if fx in ("embers", "dust", "snow", "rain", "stars") else None
     shake = shaker(s, lead, seed) if s else None
@@ -425,6 +458,12 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
         dx, dy = shake(tau) if shake else (0.0, 0.0)
         M = np.float32([[sc * k, 0, W / 2 - sc * cx + dx], [0, sc * k, H / 2 - sc * cy + dy]])
         frame = cv2.warpAffine(src, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
+        if depth is not None:
+            Md = np.float32([[sc * 4, 0, W / 2 - sc * cx + dx], [0, sc * 4, H / 2 - sc * cy + dy]])
+            near = cv2.warpAffine(depth, Md, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101) - 0.5
+            shift = amp * (2 * t - 1)
+            frame = cv2.remap(frame, gx + shift * near, gy + 0.3 * shift * near, cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REFLECT101)
         for ov in overlays:
             blend(frame, ov, tau)
         if parts:
@@ -513,7 +552,7 @@ def render_scene(job):
     else:
         lead = tl["Tf"] / 2 / C.fps
         shots = [(s, tl, n, lead)]
-        if s.get("page") and s["template"] != "page" and n >= 2 * C.fps:
+        if s.get("page") and s["template"] == "full" and n >= 2 * C.fps:
             # both: the real panel first (the evidence), then a hard cut to the dramatized AI shot
             n1 = min(max(round(n * 0.45), C.fps), n - C.fps)
             evidence = dict(s, template="page", caption="", sfx_text="", fx="", sfx="")
@@ -523,7 +562,9 @@ def render_scene(job):
         def shot_frames():
             for s2, tl2, count, ld in shots:
                 canvas, over, keys, reveal = build(s2, tl2, C.W, C.H)
-                yield from frames(canvas, keys, count, C.W, C.H, over, s2, ld, reveal, seed)
+                deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
+                yield from frames(canvas, keys, count, C.W, C.H, over, s2, ld, reveal, seed,
+                                  depth_of(canvas) if deep else None)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
         encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
@@ -712,6 +753,8 @@ def main(plan_path, imgdir, audiodir, outdir, shard=""):
     for tl, _ in todo:  # fetch + analyse each comic page once here, not in every worker
         if tl["s"].get("page"):
             C.page(tl["s"]["page"])
+    if float(S.get("parallax", 14)) and todo:  # download the depth model once, before workers race for it
+        fetch(DEPTH_URL, os.path.join(work, "depth.onnx"))
     with Pool(max(1, (os.cpu_count() or 2) // 2), initializer=init, initargs=(P, imgdir, work)) as pool:
         for done, n in enumerate(pool.imap_unordered(render_scene, todo), 1):
             print(f"scene {n} rendered ({done}/{len(todo)})", flush=True)

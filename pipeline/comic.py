@@ -221,6 +221,16 @@ def card_text(kind, w, h, accent, title="", kicker="", text="", attribution=""):
             if attribution:
                 d.text((w / 2, y0 + len(lines) * 92 + 50), "— " + attribution.upper(), font=font("bold", 48),
                        fill=rgb(accent), anchor="mm")
+        elif kind == "issue":  # right of the cover: title, date, creators
+            x0, f = w * .56, font("title", 120)
+            lines = wrap(title.upper(), f, w * .4)
+            for i, line in enumerate(lines):
+                d.text((x0, h * .3 + i * 120), line, font=f, fill="white", stroke_width=5, stroke_fill=INK)
+            y = h * .3 + len(lines) * 120 + 20
+            d.rectangle([x0, y, x0 + 220, y + 10], fill=rgb(accent))
+            d.text((x0, y + 40), kicker.upper(), font=font("bold", 60), fill=rgb(accent))
+            for i, line in enumerate(wrap(text, font("letter", 48), w * .4)):
+                d.text((x0, y + 130 + i * 58), line, font=font("letter", 48), fill=(230, 230, 230))
         elif kind == "endscreen":  # guide boxes sit where YouTube end-screen elements go
             d.text((w / 2, h * .16), title.upper() or "WATCH NEXT", font=font("title", 130), fill="white", anchor="mm",
                    stroke_width=6, stroke_fill=INK)

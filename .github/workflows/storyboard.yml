@@ -1,0 +1,30 @@
+name: storyboard
+run-name: "storyboard ${{ inputs.video_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      video_id: { description: "video whose Sources rows to storyboard", required: true, default: VID001 }
+env:
+  PYTHONUNBUFFERED: "1"
+  VIDEO_ID: ${{ inputs.video_id }}
+jobs:
+  storyboard: # every page: numbered panels + OCR'd lettering + ready-made Scenes rows (no AI involved)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr p7zip-full poppler-utils
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - run: python -m pipeline.storyboard "$VIDEO_ID" "out/$VIDEO_ID/storyboard"
+      - uses: actions/upload-artifact@v4 # artifact, not a release: it holds copyrighted pages
+        with:
+          name: ${{ inputs.video_id }}-storyboard
+          path: |
+            out/${{ inputs.video_id }}/storyboard/
+            !out/**/_work/**
+          retention-days: 3

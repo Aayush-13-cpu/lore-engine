@@ -20,7 +20,7 @@ HOOKY = re.compile(r"\b(never|nobody|no one|secret\w*|truth|real|actually|only|f
                    r"dead|destroy\w*|devour\w*|eat\w*|ate|god\w*|strongest|powerful|universe|why|how|what if|imagine|"
                    r"wasn't|didn't|isn't|can't|won't|every|billions?|millions?|end)\b", re.I)
 WEAK_START = re.compile(r"^(and|but|so|which|that|then|this|these|it|its|he|she|they|his|her|their|him|them|there)\b", re.I)
-SKIP = {"title", "sting", "quote", "endscreen", "dossier", "split"}  # landscape-only layouts: a vertical crop cuts their text
+SKIP = {"title", "sting", "quote", "endscreen", "dossier", "split", "issue"}  # landscape-only layouts: a vertical crop cuts their text
 
 
 def score(s):

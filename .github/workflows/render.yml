@@ -23,6 +23,9 @@ jobs:
       clip_shards: "${{ steps.plan.outputs.clip_shards }}"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -q openpyxl==3.1.5
@@ -52,11 +55,16 @@ jobs:
     env: { MODELS_DIR: /mnt/models, IMAGE_CACHE: work/cache }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/cache/restore@v4 # images from earlier renders of this video; unchanged ones are reused
         with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
-      - run: sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+      - run: |
+          sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
+          sudo apt-get update -q && sudo apt-get install -y -q python3-pil p7zip-full poppler-utils
       - run: |
           python3 pipeline/images.py work/plan.json refs ${{ matrix.shard }} ${{ strategy.job-total }} work/images
           touch work/images/refs-done-${{ matrix.shard }}.txt
@@ -74,6 +82,9 @@ jobs:
     env: { MODELS_DIR: /mnt/models, IMAGE_CACHE: work/cache }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
@@ -82,7 +93,7 @@ jobs:
         with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
       - run: |
           sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
-          sudo apt-get update -q && sudo apt-get install -y -q python3-pil
+          sudo apt-get update -q && sudo apt-get install -y -q python3-pil p7zip-full poppler-utils
       - run: python3 pipeline/images.py work/plan.json scenes ${{ matrix.shard }} ${{ strategy.job-total }} work/images
       - uses: actions/upload-artifact@v4
         with:
@@ -142,10 +153,13 @@ jobs:
       matrix: { shard: "${{ fromJSON(needs.plan.outputs.clip_shards) }}" }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
-      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg p7zip-full poppler-utils
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile onnxruntime
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
@@ -165,10 +179,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
-      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg p7zip-full poppler-utils
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile onnxruntime
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
@@ -194,10 +211,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # your private comics repo (variable ASSETS_REPO + secret ASSETS_TOKEN)
+        if: ${{ vars.ASSETS_REPO != '' }}
+        with: { repository: "${{ vars.ASSETS_REPO }}", token: "${{ secrets.ASSETS_TOKEN }}", path: private }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
-      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg p7zip-full poppler-utils
+      - run: pip install -q numpy pillow opencv-python-headless openpyxl soundfile onnxruntime
       - uses: actions/download-artifact@v4
         with: { name: plan, path: work }
       - uses: actions/download-artifact@v4
