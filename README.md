@@ -32,6 +32,8 @@ No terminal? **GitHub → Actions → render → Run workflow**, then download t
 
 ## Real comics first (v3)
 
+**Which comics to get for each video, and how to find them for any new topic: see [COMICS.md](COMICS.md).**
+
 Real panels carry the characters; AI draws only what the comics never showed (aim ~60% real / 40% AI).
 
 1. **Keep your comics private.** Create a *private* GitHub repo (e.g. `lore-assets`) holding your own DRM-free
