@@ -5,9 +5,12 @@ the lettering is read with Tesseract OCR, and storyboard.xlsx holds one ready-ma
 usage: python -m pipeline.storyboard VID001 out/VID001/storyboard
 """
 import os
+import re
 import subprocess
 import sys
 
+import cv2
+import numpy as np
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageDraw
 
@@ -16,10 +19,24 @@ from pipeline.render import panel_boxes
 from pipeline.sheet import SHEET, table
 
 
-def ocr(img, tmp):
-    img.save(tmp)
-    r = subprocess.run(["tesseract", tmp, "stdout", "--psm", "6"], capture_output=True, text=True)
-    return " ".join(r.stdout.split())  # raw caps lettering; the writer decides what it means
+def ocr(panel, tmp):
+    """Read only the lettering: OCR each light balloon / caption box, keep real all-caps words (comic lettering)."""
+    a = np.asarray(panel.convert("RGB"))
+    light = (a.max(axis=2) > 185) & ((a.max(axis=2).astype(int) - a.min(axis=2)) < 90)  # white or yellowed paper
+    light = cv2.morphologyEx(light.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    h, w = light.shape
+    found = []
+    for x, y, bw, bh, area in cv2.connectedComponentsWithStats(light)[2][1:]:
+        if not (0.004 * w * h < area < 0.5 * w * h and bw > 40 and bh > 20):
+            continue
+        g = cv2.cvtColor(a[y:y + bh, x:x + bw], cv2.COLOR_RGB2GRAY)
+        cv2.imwrite(tmp, cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1])
+        r = subprocess.run(["tesseract", tmp, "stdout", "--psm", "6"], capture_output=True, text=True)
+        words = [t for t in r.stdout.split()
+                 if re.fullmatch(r"[A-Z][A-Z'’!?.,\-]*", t) and sum(c.isalpha() for c in t) >= 2 or t in ("A", "I")]
+        if len(words) >= 2:
+            found.append((y, x, " ".join(words)))
+    return " / ".join(t for _, _, t in sorted(found))  # top-to-bottom, left-to-right reading order
 
 
 def main(vid, out):
