@@ -22,7 +22,7 @@ from pipeline.sheet import SHEET, table
 def ocr(panel, tmp):
     """Read only the lettering: OCR each light balloon / caption box, keep real all-caps words (comic lettering)."""
     a = np.asarray(panel.convert("RGB"))
-    light = (a.max(axis=2) > 185) & ((a.max(axis=2).astype(int) - a.min(axis=2)) < 125)  # white or yellowed paper
+    light = (a.max(axis=2) > 185) & ((a.max(axis=2).astype(int) - a.min(axis=2)) < 90)  # white or lightly yellowed paper
     light = cv2.morphologyEx(light.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     h, w = light.shape
     found = []
