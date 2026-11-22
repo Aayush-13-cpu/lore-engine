@@ -22,7 +22,7 @@ from pipeline.sheet import SHEET, table
 def ocr(panel, tmp):
     """Read only the lettering: OCR each light balloon / caption box, keep real all-caps words (comic lettering)."""
     a = np.asarray(panel.convert("RGB"))
-    light = (a.max(axis=2) > 185) & ((a.max(axis=2).astype(int) - a.min(axis=2)) < 90)  # white or yellowed paper
+    light = (a.max(axis=2) > 185) & ((a.max(axis=2).astype(int) - a.min(axis=2)) < 125)  # white or yellowed paper
     light = cv2.morphologyEx(light.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     h, w = light.shape
     found = []
@@ -32,11 +32,22 @@ def ocr(panel, tmp):
         g = cv2.cvtColor(a[y:y + bh, x:x + bw], cv2.COLOR_RGB2GRAY)
         cv2.imwrite(tmp, cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1])
         r = subprocess.run(["tesseract", tmp, "stdout", "--psm", "6"], capture_output=True, text=True)
-        words = [t for t in r.stdout.split()
-                 if re.fullmatch(r"[A-Z][A-Z'’!?.,\-]*", t) and sum(c.isalpha() for c in t) >= 2 or t in ("A", "I")]
-        if len(words) >= 2:
-            found.append((y, x, " ".join(words)))
+        tokens = r.stdout.split()
+        words = [t for t in tokens if wordlike(t)]
+        text = " ".join(words)
+        if len(words) >= 2 and len(words) >= 0.6 * len(tokens) and not any(text in f for _, _, f in found):
+            found = [f for f in found if f[2] not in text] + [(y, x, text)]  # keep the longest of overlapping reads
     return " / ".join(t for _, _, t in sorted(found))  # top-to-bottom, left-to-right reading order
+
+
+SHORT = {"A", "I", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN", "IS", "IT", "ME", "MY", "NO", "OF",
+         "OH", "ON", "OR", "SO", "TO", "UP", "US", "WE"}
+
+
+def wordlike(t):
+    """Comic lettering is all caps: a real word has a vowel (or is a known short word); art noise rarely does."""
+    core = t.strip(".,!?'’\"-:;…")
+    return core in SHORT or (len(core) >= 3 and core.isalpha() and core.isupper() and any(v in core for v in "AEIOUY"))
 
 
 def main(vid, out):
