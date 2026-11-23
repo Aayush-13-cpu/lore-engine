@@ -11,6 +11,7 @@ Lore Engine - make a video from the terminal (rendering runs on GitHub, not this
 
   ./lore.sh sheet               open the content sheet to write a video
   ./lore.sh storyboard VID001   read the video's real comics: numbered panels + lettering + ready Scenes rows
+  ./lore.sh flow VID001         Marvel only: draw the images in Google Flow (your Chrome, your login)
   ./lore.sh draft  VID001       fast preview: real voice + placeholder art (~15-20 min)
   ./lore.sh render VID001       full video + Shorts + thumbnail (first time ~2 h; re-renders reuse cached images)
   ./lore.sh render VID001 1-8   only scenes 1-8
@@ -66,6 +67,19 @@ watch_run() { # $1 run id
   fi
 }
 
+flow() { # Marvel videos: draw the images in Google Flow in your own Chrome, then publish them for the runners
+  need
+  local py="$HOME/.cache/lore-engine-venv/bin/python"
+  [ -x "$py" ] || py=python3 # needs openpyxl + playwright: pip install openpyxl playwright
+  mkdir -p "out/${1:?}"
+  "$py" -m pipeline.sheet "$1" > "out/$1/plan.json"
+  "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"
+  gh release view "flow-$1" >/dev/null 2>&1 ||
+    gh release create "flow-$1" --prerelease --title "Flow images for $1" --notes "Google Flow images used by renders of $1"
+  gh release upload "flow-$1" "out/$1"/flow/*.png --clobber
+  echo "Flow images published. Now render with: ./lore.sh render $1"
+}
+
 push_sheet() {
   need
   git add content assets
@@ -96,6 +110,7 @@ case "${1:-help}" in
   render) start "${2:?usage: ./lore.sh render VID001 [1-8]}" "${3:-}" false ;;
   draft) start "${2:?usage: ./lore.sh draft VID001}" "" true ;;
   storyboard) storyboard "${2:?usage: ./lore.sh storyboard VID001}" ;;
+  flow) flow "${2:?usage: ./lore.sh flow VID001}" ;;
   status) need; status ;;
   watch) need; watch_run "$(latest)" ;;
   get) need; get "${2:?usage: ./lore.sh get VID001}" ;;

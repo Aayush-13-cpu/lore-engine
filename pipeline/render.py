@@ -112,8 +112,10 @@ def panel_boxes(img):
     (white or yellowed newsprint). Art that bleeds across a gutter merges those panels; full-bleed = one box."""
     a = np.asarray(img.convert("RGB")).astype(np.int16)
     h, w = a.shape[:2]
-    rim = np.concatenate([a[:6].reshape(-1, 3), a[-6:].reshape(-1, 3), a[:, :6].reshape(-1, 3), a[:, -6:].reshape(-1, 3)])
-    gutter = (np.abs(a - np.median(rim, axis=0)).max(axis=2) < 32) | (a.min(axis=2) > 225)
+    my, mx = max(h // 50, 2), max(w // 50, 2)  # margin band just inside the edge: scans often have dark borders
+    rim = np.concatenate([a[my:2 * my].reshape(-1, 3), a[-2 * my:-my].reshape(-1, 3),
+                          a[:, mx:2 * mx].reshape(-1, 3), a[:, -2 * mx:-mx].reshape(-1, 3)])
+    gutter = (np.abs(a - np.median(rim, axis=0)).max(axis=2) < 40) | (a.min(axis=2) > 225)
     out = []
 
     def cut(x0, y0, x1, y1, axis, flipped):  # axis 0: split on horizontal gutters (rows), 1: vertical (columns)
@@ -170,6 +172,10 @@ def spread(text, dur):
         out.append([w, round(t, 3), round(t + d, 3)])
         t += d
     return out
+
+
+def bars(style):
+    return str(style.get("letterbox", "")).strip().lower() in ("yes", "true", "1")
 
 
 def voice_key(s):
@@ -406,7 +412,7 @@ def build(s, tl, W, H, scale=1.0, captions=True):
             over.append(prep(comic.card_text(tpl, W, H, acc, **kw), 0, 0, lead + 0.1))
     if captions and s["caption"] and tpl not in CARDS | {"split", "issue"}:
         over.append(prep(comic.caption_box(s["caption"], st.get("caption_bg") or "#F6E27A", st.get("caption_fg") or "#111111"),
-                         60, 50, lead + 0.3))
+                         60, 160 if bars(st) else 50, lead + 0.3))  # clear of the letterbox bar
     if s["sfx_text"]:
         im = comic.sfx_word(s["sfx_text"].upper(), st.get("sfx_color") or "#FFE14D")
         over.append(prep(im, W - im.width - 70 if W >= H else (W - im.width) // 2, int(H * .52 - im.height / 2), lead, pop=True))
@@ -789,7 +795,9 @@ def main(plan_path, imgdir, audiodir, outdir, shard=""):
         fc.append(f"{prev}[v{i}]xfade=transition={XFADE[tls[i]['tr']][0]}:duration={tls[i]['Tf'] / fps:.5f}"
                   f":offset={off / fps:.5f}[x{i}]")
         prev = f"[x{i}]"
-    fc.append(f"{prev}{C.style.get('grade') or 'eq=contrast=1.04:saturation=1.08'},vignette=angle=PI/5[g]")
+    fc.append(f"{prev}{C.style.get('grade') or 'eq=contrast=1.04:saturation=1.08'},vignette=angle=PI/5"
+              + (",drawbox=y=0:w=iw:h=ih*0.12:t=fill:c=black,drawbox=y=ih*0.88:w=iw:h=ih*0.12:t=fill:c=black" if bars(C.style) else "")
+              + "[g]")  # letterbox bars = 2.39:1 cinema frame for movie-style videos
     last = "[g]"
     if str(S["watermark"]).lower() in ("yes", "true", "1"):
         fc.append(f"[g][{nv}:v]overlay=W-w-36:H-h-28[w]")

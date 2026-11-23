@@ -72,7 +72,7 @@ def word_groups(tls, max_words=3, max_chars=18):
     return groups
 
 
-def ass(groups, hook, total, accent):
+def ass(groups, hook, total, accent, cta_from):
     bgr = "".join(reversed(re.findall("..", accent.lstrip("#")))).upper()
     head = R.ass_header(W, H, 116, 0, 5, "Anton", 8).replace(
         "\n\n[Events]",
@@ -82,7 +82,7 @@ def ass(groups, hook, total, accent):
     ev = []
     if hook:
         ev.append(f"Dialogue: 1,{R.ass_time(0)},{R.ass_time(total)},Hook,,0,0,0,,{hook.upper()}")
-    ev.append(f"Dialogue: 1,{R.ass_time(max(total - 1.8, 0))},{R.ass_time(total)},Cta,,0,0,0,,FULL STORY ON THE CHANNEL")
+    ev.append(f"Dialogue: 1,{R.ass_time(cta_from)},{R.ass_time(total)},Cta,,0,0,0,,FULL STORY ON THE CHANNEL")
     for g, nxt in zip(groups, groups[1:] + [None]):
         for k, (w, a, b) in enumerate(g):
             end = g[k + 1][1] if k + 1 < len(g) else min(b + 0.35, nxt[0][1] if nxt else total)
@@ -127,6 +127,8 @@ def main(plan_path, imgdir, audiodir, outdir):
         if h.get("hook_line") and f"hook{h['n']}" in meta:  # spoken cold-open line before the clip
             scenes.insert(0, dict(scenes[0], voice_key=f"hook{h['n']}", narration=h["hook_line"], sfx="impact",
                                   sfx_text="", caption=""))
+        if "cta" in meta:  # funnel: stop on the cliffhanger, then send viewers to the long video for the ending
+            scenes.append(dict(scenes[-1], voice_key="cta", narration=S["shorts_cta"], sfx="", sfx_text="", caption=""))
         tls = R.timeline(dict(P, scenes=scenes), meta, fps, pad=PAD)
         total = sum(tl["F"] for tl in tls) / fps
         voice, sfx = R.tracks(tls, audiodir, total, fps)
@@ -134,7 +136,7 @@ def main(plan_path, imgdir, audiodir, outdir):
         R.mix(voice, sfx, total, mixed, P, work)
         subs = os.path.join(work, f"short{k}.ass")
         with open(subs, "w") as f:
-            f.write(ass(word_groups(tls), hook, total, R.C.accent))
+            f.write(ass(word_groups(tls), hook, total, R.C.accent, tls[-1]["voice"] if "cta" in meta else max(total - 1.8, 0)))
         dst = os.path.join(outdir, "shorts", f"short{k}.mp4")
         grade = R.C.style.get("grade") or "eq=contrast=1.04:saturation=1.08"
         fc = (f"[0:v]{grade},vignette=angle=PI/5,ass={subs}:fontsdir=assets/fonts[g];"

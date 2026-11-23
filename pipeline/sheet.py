@@ -27,7 +27,8 @@ DEFAULTS = dict(
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
     tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
     scene_pad=0.3, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
-    shorts_count=3, shorts_min=25, shorts_max=58, watermark="yes",
+    shorts_count=1, shorts_min=25, shorts_max=58, watermark="yes",
+    shorts_cta="Want to know how it ends? The full story is on my channel.",
 )
 
 

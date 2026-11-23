@@ -140,6 +140,7 @@ def main(plan_path, out):
         os.makedirs(cache, exist_ok=True)
     lines = [(f"s{s['n']:03d}", s["narration"]) for s in P["scenes"]]
     lines += [(f"hook{h['n']}", h["hook_line"]) for h in P["shorts"] if h["hook_line"]]
+    lines += [("cta", str(P["settings"].get("shorts_cta") or ""))]  # spoken funnel line closing every Short
     say, meta = None, {}
     for name, text in lines:
         if not text:
