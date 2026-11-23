@@ -1,5 +1,5 @@
-"""Marvel videos only: draw the scene images with Google Flow, driven through your own Chrome (Flow has no API).
-
+"""Videos whose comics we cannot use (Marvel, DC, The Boys, Invincible): draw the scene images with Google Flow,
+driven through your own Chrome (Flow has no API). Public-domain videos keep using their real comic pages.
 usage: python flow/flow_images.py work/plan.json out/VID001/flow
 - Opens real Chrome with a dedicated profile (~/.cache/lore-flow-profile). First run: sign in to Google yourself
   in that window; the session is remembered, and no password is ever stored by this script.

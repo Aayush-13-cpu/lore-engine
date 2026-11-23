@@ -137,7 +137,7 @@ def main(plan_path, phase, shard, nshards, out):
         flow = os.path.join(os.environ.get("FLOW_DIR", "work/flow"), j["name"])
         if j.get("asset") and os.path.exists(j["asset"]):
             shutil.copy(j["asset"], dst)  # approved reference image wins over generation
-        elif os.path.exists(flow):  # drawn in Google Flow on your machine (Marvel videos): used as-is
+        elif os.path.exists(flow):  # drawn in Google Flow on your machine (non-public-domain videos): used as-is
             shutil.copy(flow, dst)
         elif j.get("crop"):  # reference cut from a real comic panel: on-model, nothing generated
             from PIL import Image
