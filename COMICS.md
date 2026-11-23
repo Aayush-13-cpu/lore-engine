@@ -27,6 +27,18 @@ one DMCA notice can take down this repo or strike the channel.
 
 ## The list
 
+### Forgotten public-domain comics (nothing to buy)
+These are fetched straight from Wikimedia Commons by the runners (Sources tab), so you don't need to download anything.
+To find more: browse Commons `Category:Scanned_English_comic_books_in_DjVu`. Read every page, then write the Scenes rows tier by tier.
+
+| Video | Comic | Pages used |
+|---|---|---|
+| VID007 | Eerie #12 (Avon, 1953), Dracula | 1-28 |
+| VID008 | Amazing Man Comics #5 (Centaur, 1939) | 1, 4-13 |
+| VID009 | City of the Living Dead (Avon, 1952) | tales on 3-9, 12-17, 19-24 (Congo tale skipped) |
+| VID010 | Frankenstein #27 (Prize, 1953), "Frozen Alive" | 1, 5-16 |
+| VID011 | Eerie #9 (Avon) | tales on 4-8, 10-16, 23-26 |
+
 `ID` is what to name the folder (`comics/<id>`). **verify** = double-check the issue number on Fandom before buying.
 
 ### VID001 · Galactus: the complete lore
