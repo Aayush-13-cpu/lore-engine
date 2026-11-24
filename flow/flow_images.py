@@ -7,21 +7,22 @@ usage: python flow/flow_images.py work/plan.json out/VID001/flow
   Already-saved images are skipped, so you can stop and resume any time.
 Then ./lore.sh flow uploads the folder as release 'flow-<VID>', and the render uses those images.
 
-shortcut: page selectors are best guesses until the first live test with your account; adjust FLOW_* below then.
+Selectors checked live on 2026-11-24 (project chat box + "Start generation"); if Flow changes its page, fix them in main().
 """
 import base64
+import io
 import json
 import os
-import re
 import sys
 import time
 
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
-FLOW_URL = "https://labs.google/fx/tools/flow"
+FLOW_URL = "https://flow.google.com/"  # moved from labs.google/fx/tools/flow in 2026
 PROFILE = os.path.expanduser("~/.cache/lore-flow-profile")
-FLOW_GENERATE = re.compile(r"generate|create|send|submit|arrow_forward", re.I)
-WAIT_S = 240  # Flow can take a few minutes per generation
+PROJECT_FILE = os.path.expanduser("~/.cache/lore-flow-project")  # the Flow project every image goes into
+WAIT_S = 240  # measured ~45 s per image (Nano Banana, PRO account, 2026-11-24)
 
 
 def new_images(page, seen):
@@ -44,8 +45,7 @@ def save(page, src, path):
         data = bytes(page.evaluate("async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", src))
     else:
         data = page.request.get(src).body()
-    with open(path, "wb") as f:
-        f.write(data)
+    Image.open(io.BytesIO(data)).convert("RGB").save(path)  # Flow serves WebP; the render expects real PNGs
 
 
 def main(plan_path, out):
@@ -55,15 +55,25 @@ def main(plan_path, out):
     print(f"{len(jobs)} images to draw in Flow")
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(PROFILE, channel="chrome", headless=False, viewport=None,
-                                                    args=["--start-maximized"])
+                                                    args=["--start-maximized"],
+                                                    # Playwright's default 'basic' store can't decrypt the login
+                                                    # cookies normal Chrome saved via the keyring: you'd be signed out
+                                                    ignore_default_args=["--password-store=basic"])
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto(FLOW_URL)
-        input("Sign in to Google in the Chrome window if asked, open a Flow project, choose image generation, "
-              "then press Enter here... ")
+        if os.path.exists(PROJECT_FILE):
+            page.goto(open(PROJECT_FILE).read().strip())
+        else:
+            page.goto(FLOW_URL)
+            input("Sign in to Google in the Chrome window if asked, open (or create) a Flow project, "
+                  "then press Enter here... ")
+            open(PROJECT_FILE, "w").write(page.url)
+        box = page.get_by_role("textbox", name="What do you want to create?")
+        box.wait_for(timeout=60000)
         for i, j in enumerate(jobs, 1):
             seen = {img.get_attribute("src") for img in page.locator("img").all()}
-            page.get_by_role("textbox").last.fill(j["prompt"])
-            page.get_by_role("button", name=FLOW_GENERATE).last.click()
+            shape = "3:4 portrait" if j in P["refs"] else "16:9"  # refs are character sheets
+            box.fill(f"Generate one {shape} image, no text, no panel borders: {j['prompt']}")
+            page.get_by_role("button", name="Start generation").click()
             t0, got = time.time(), []
             while time.time() - t0 < WAIT_S and not got:
                 time.sleep(5)

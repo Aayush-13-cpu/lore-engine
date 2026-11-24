@@ -70,10 +70,14 @@ watch_run() { # $1 run id
 flow() { # videos whose comics we cannot use (Marvel, DC, ...): draw the images in Google Flow in your own Chrome, then publish them for the runners
   need
   local py="$HOME/.cache/lore-engine-venv/bin/python"
-  [ -x "$py" ] || py=python3 # needs openpyxl + playwright: pip install openpyxl playwright
+  [ -x "$py" ] || py=python3 # needs openpyxl + playwright: pip install openpyxl playwright pillow
   mkdir -p "out/${1:?}"
   "$py" -m pipeline.sheet "$1" > "out/$1/plan.json"
-  "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"
+  # VS Code's snap terminal leaks its GTK/GIO paths, which crash Chrome (GLib settings schema error)
+  env -u GSETTINGS_SCHEMA_DIR -u GTK_PATH -u GTK_EXE_PREFIX -u GIO_MODULE_DIR -u GDK_PIXBUF_MODULE_FILE \
+    -u GDK_PIXBUF_MODULEDIR -u GTK_IM_MODULE_FILE -u LOCPATH \
+    XDG_DATA_DIRS="${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-${XDG_DATA_DIRS:-/usr/share}}" \
+    "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"
   gh release view "flow-$1" >/dev/null 2>&1 ||
     gh release create "flow-$1" --prerelease --title "Flow images for $1" --notes "Google Flow images used by renders of $1"
   gh release upload "flow-$1" "out/$1"/flow/*.png --clobber
