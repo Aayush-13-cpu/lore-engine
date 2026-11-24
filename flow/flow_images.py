@@ -13,6 +13,8 @@ import base64
 import io
 import json
 import os
+import re
+import shutil
 import sys
 import time
 
@@ -38,6 +40,29 @@ def new_images(page, seen):
     return out
 
 
+def trim_frame(im):
+    """Cut a flat paper margin or printed border Flow sometimes draws around the art (up to 6% per side),
+    then scale back to the original size so every image keeps the same shape."""
+    import numpy as np
+    g = np.asarray(im.convert("L"), np.float32)
+    h, w = g.shape
+
+    def depth(lines):  # edge lines that are flat paper (aged texture spreads ~25 grey levels, art 100+) ...
+        n, cap = 0, round(0.06 * len(lines))
+        while n < cap and np.percentile(lines[n], 90) - np.percentile(lines[n], 10) <= 40:
+            n += 1
+        if n:  # ... plus the printed ink rule just inside the paper
+            while n < cap and lines[n].mean() < 70:
+                n += 1
+        return n
+
+    top, bottom = depth(g), depth(g[::-1])
+    left, right = depth(g.T), depth(g.T[::-1])
+    if not (top or bottom or left or right):
+        return im
+    return im.crop((left, top, w - right, h - bottom)).resize((w, h), Image.LANCZOS)
+
+
 def save(page, src, path):
     if src.startswith("data:"):
         data = base64.b64decode(src.split(",", 1)[1])
@@ -45,14 +70,89 @@ def save(page, src, path):
         data = bytes(page.evaluate("async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", src))
     else:
         data = page.request.get(src).body()
-    Image.open(io.BytesIO(data)).convert("RGB").save(path)  # Flow serves WebP; the render expects real PNGs
+    trim_frame(Image.open(io.BytesIO(data)).convert("RGB")).save(path)  # Flow serves WebP; the render wants PNG
+
+
+RULES = ("Quality: correct anatomy (five fingers on each hand, natural limbs, no extra or missing limbs), no duplicated "
+         "or merged figures, coherent background and perspective, crisp clean inks, no blur, no smudges, no artifacts. "
+         "Strictly no text of any kind: no letters, words, numbers, speech balloons, captions, sound-effect lettering, "
+         "signs with writing, panel borders, gutters, split screens, frames, watermarks, signatures or logos.")
+
+
+def flow_prompt(P, j, attached):
+    """A structured brief for Flow: comic-panel look, the shot, fixed character designs, hard quality rules."""
+    style, chars = P["style"]["prompt_prefix"], P["characters"]
+    if j.get("char"):
+        c = chars[j["char"]]
+        return (f"Create one 3:4 portrait character model sheet in this exact comic art style: {style} "
+                f"Subject: {c['name']}, full body from head to feet, neutral three-quarter standing pose, plain flat "
+                f"light-grey background, even studio lighting. Design, follow exactly: {c['look']}. {RULES}")
+    cast = [chars[c] for c in j.get("cast", []) if c in chars]
+    out = ["Create one 16:9 widescreen illustration drawn exactly like professional comic book art (inks, flat "
+           "printed colours, halftone texture), shown full-bleed: the artwork fills the whole image to all four edges, "
+           f"with no frame, border or paper margin around it. Art style: {style}",
+           f"Scene: {j.get('visual') or j['prompt']}."]
+    if cast:
+        out.append("Characters, identical to their design in every image (same face, hair, build, costume and colours): "
+                   + " ".join(f"{c['name']}: {c['look']}." for c in cast))
+    if attached:
+        names = " and ".join(chars[c]["name"] for c in attached)
+        out.append(f"The attached reference image{'s show' if len(attached) > 1 else ' shows'} the exact design of "
+                   f"{names}: match it precisely, including costume details and colours.")
+    out.append("Composition: cinematic comic-panel staging, one clear focal point, strong readable silhouettes, "
+               "dramatic lighting, believable scale.")
+    return " ".join(out + [RULES])
+
+
+def attach(page, path):
+    """Put one image file into the prompt as an ingredient (uploaded once per project, then picked by name)."""
+    page.get_by_role("button", name="Add ingredients to the prompt box").click()
+    name = os.path.basename(path)
+    page.get_by_role("textbox", name=re.compile("search assets", re.I)).fill(name)  # newer images push it out of the list
+    time.sleep(2)
+    opt = page.get_by_role("option", name=re.compile(r"^" + re.escape(name)))
+    if not opt.count():
+        with page.expect_file_chooser() as fc:
+            page.get_by_role("button", name="Upload media").click()
+        fc.value.set_files(path)
+    for _ in range(60):  # the option reads "Uploading <name>" until the upload finishes
+        if opt.count() and "Uploading" not in opt.first.inner_text():
+            break
+        time.sleep(1)
+    chips = page.get_by_role("button", name="Ingredient", exact=True)
+    before = chips.count()
+    opt.first.click()
+    time.sleep(1)
+    add = page.get_by_role("button", name="Add to prompt")
+    if add.count() and add.first.is_visible():  # from the full list it needs this; a search hit is added directly
+        add.first.click()
+        time.sleep(1)
+    if chips.count() <= before:
+        raise RuntimeError(f"{name} did not reach the prompt box")
 
 
 def main(plan_path, out):
     P = json.load(open(plan_path))
+    vid = P["video"]["video_id"]
     os.makedirs(out, exist_ok=True)
-    jobs = [j for j in P["refs"] + P["images"] if not j.get("src") and not os.path.exists(os.path.join(out, j["name"]))]
+    for r in P["refs"]:  # an approved image, or the face cut from a real panel, is the reference as-is
+        dst = os.path.join(out, r["name"])
+        if os.path.exists(dst):
+            continue
+        if r.get("asset") and os.path.exists(r["asset"]):
+            Image.open(r["asset"]).convert("RGB").save(dst)
+        elif r.get("crop"):
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from pipeline import sources
+            ref, box = r["crop"].split("@")
+            im = Image.open(sources.page_image(ref, P.get("sources", {}), os.path.join(out, "pages"))).convert("RGB")
+            x0, y0, x1, y1 = map(float, box.split(","))
+            im.crop((round(x0 * im.width), round(y0 * im.height), round(x1 * im.width), round(y1 * im.height))).save(dst)
+    jobs = [j for j in P["refs"] + P["images"]  # refs first: every later scene is drawn against them
+            if not j.get("src") and not j.get("crop") and not os.path.exists(os.path.join(out, j["name"]))]
     print(f"{len(jobs)} images to draw in Flow")
+    if not jobs:
+        return
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(PROFILE, channel="chrome", headless=False, viewport=None,
                                                     args=["--start-maximized"],
@@ -70,9 +170,24 @@ def main(plan_path, out):
         box = page.get_by_role("textbox", name="What do you want to create?")
         box.wait_for(timeout=60000)
         for i, j in enumerate(jobs, 1):
-            seen = {img.get_attribute("src") for img in page.locator("img").all()}
-            shape = "3:4 portrait" if j in P["refs"] else "16:9"  # refs are character sheets
-            box.fill(f"Generate one {shape} image, no text, no panel borders: {j['prompt']}")
+            while page.get_by_role("button", name="Ingredient", exact=True).count():  # chips stay after a generation
+                page.get_by_role("button", name="Ingredient", exact=True).first.click()
+                time.sleep(0.5)
+            attached = []
+            for c in j.get("cast", []):
+                ref = os.path.join(out, f"ref_{c}.png")
+                if os.path.exists(ref):
+                    tagged = os.path.join(out, "upload", f"{vid}_ref_{c}.png")  # unique name in the project's media
+                    os.makedirs(os.path.dirname(tagged), exist_ok=True)
+                    shutil.copy(ref, tagged)
+                    try:
+                        attach(page, tagged)
+                        attached.append(c)
+                    except Exception as e:  # draw it anyway from the written design; say so
+                        print(f"  {j['name']}: could not attach {c}'s reference ({e.__class__.__name__})", flush=True)
+                        page.keyboard.press("Escape")
+            seen = {img.get_attribute("src") for img in page.locator("img").all()}  # after attaching: refs are not results
+            box.fill(flow_prompt(P, j, attached))
             page.get_by_role("button", name="Start generation").click()
             t0, got = time.time(), []
             while time.time() - t0 < WAIT_S and not got:
@@ -81,8 +196,11 @@ def main(plan_path, out):
             if not got:
                 print(f"[{i}/{len(jobs)}] {j['name']}: no image after {WAIT_S}s (blocked prompt?), skipped", flush=True)
                 continue
-            save(page, got[0], os.path.join(out, j["name"]))
-            print(f"[{i}/{len(jobs)}] {j['name']} saved ({time.time() - t0:.0f}s)", flush=True)
+            dst = os.path.join(out, j["name"])
+            save(page, got[0], dst)
+            w, h = Image.open(dst).size
+            print(f"[{i}/{len(jobs)}] {j['name']} saved {w}x{h} ({time.time() - t0:.0f}s)"
+                  + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95 else ""), flush=True)
         ctx.close()
 
 

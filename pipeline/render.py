@@ -90,7 +90,9 @@ class Ctx:
             if not os.path.exists(path):  # drafts skip the image runners: use the original page
                 path = sources.page_image(src, self.P.get("sources", {}), self.work)
             img = Image.open(path).convert("RGB")
-            self.pages[src] = (img, panel_boxes(img))
+            small = img.copy()
+            small.thumbnail((1024, 1024))  # gutter peaks for to_gutters(); full-size masks would eat RAM per worker
+            self.pages[src] = (img, panel_boxes(img), gutter_nets(np.asarray(small.convert("L"))))
         return self.pages[src]
 
     def image(self, name):
@@ -107,36 +109,117 @@ def init(*args):
     C = Ctx(*args)
 
 
+def gutter_nets(g):
+    """The gutters + margins: one connected network of not-black paper (white or yellowed newsprint, stray colour).
+    Only the black plate counts: colour plates printed off-register smear into gutters on old comics. Returned
+    thickened by t px across rows / across columns (a slightly skewed gutter still crosses a cell), and as is."""
+    h, w = g.shape
+    k = max(3, round(w * 0.003)) | 1  # mends 1-2 px breaks in a scanned border line; gutters are far wider
+    ink = cv2.morphologyEx((g < 110).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+    _, lab, st, _ = cv2.connectedComponentsWithStats(1 - ink, connectivity=4)
+    net = np.isin(lab, [i for i in range(1, len(st)) if st[i, 2] >= 0.5 * w and st[i, 3] >= 0.5 * h]).astype(np.uint8)
+    t = max(3, round(0.012 * max(h, w))) | 1
+    return cv2.dilate(net, np.ones((t, 1), np.uint8)) > 0, cv2.dilate(net, np.ones((1, t), np.uint8)) > 0, net > 0
+
+
+def to_gutters(rect, nets, pw, ph):
+    """Slide a hand-framed box's edges onto the nearest gutters, for pages whose panels could not be separated
+    (a balloon crossing a gutter, staggered layouts): a broken gutter still peaks far above the panels around it."""
+    rows_net, cols_net = nets[:2]
+    h, w = rows_net.shape
+    sx, sy = w / pw, h / ph
+
+    def nearest(prof, v, lo, reach):  # centre of the strongest gutter peak within reach of v (nearest if tied)
+        a, b = max(0, v - reach), min(len(prof), v + reach + 1)
+        if b <= a or prof[a:b].max() < lo:
+            return v
+        top = np.nonzero(prof[a:b] >= prof[a:b].max() - 0.05)[0] + a
+        i = j = int(top[np.argmin(abs(top - v))])
+        while i > a and prof[i - 1] >= prof[i] - 0.05 and prof[i - 1] >= lo:
+            i -= 1
+        while j + 1 < b and prof[j + 1] >= prof[j] - 0.05 and prof[j + 1] >= lo:
+            j += 1
+        return (i + j) // 2
+
+    x0, y0, x1, y1 = (round(rect[0] * sx), round(rect[1] * sy), round(rect[2] * sx), round(rect[3] * sy))
+    rows = rows_net[:, x0:max(x1, x0 + 1)].mean(axis=1)
+    y0 = nearest(rows, y0, 0.35, round(0.08 * h)) if y0 > 0.02 * h else y0  # the page's own edge needs no snapping
+    y1 = nearest(rows, y1, 0.35, round(0.08 * h)) if y1 < 0.98 * h else y1
+    cols = cols_net[y0:max(y1, y0 + 1)].mean(axis=0)
+    x0 = nearest(cols, x0, 0.5, round(0.12 * w)) if x0 > 0.02 * w else x0
+    x1 = nearest(cols, x1, 0.5, round(0.12 * w)) if x1 < 0.98 * w else x1
+    return x0 / sx, y0 / sy, x1 / sx, y1 / sy
+
+
 def panel_boxes(img):
-    """Panels in western reading order by recursive XY-cut along gutters of the page's own paper colour
-    (white or yellowed newsprint). Art that bleeds across a gutter merges those panels; full-bleed = one box."""
-    a = np.asarray(img.convert("RGB")).astype(np.int16)
-    h, w = a.shape[:2]
-    my, mx = max(h // 50, 2), max(w // 50, 2)  # margin band just inside the edge: scans often have dark borders
-    rim = np.concatenate([a[my:2 * my].reshape(-1, 3), a[-2 * my:-my].reshape(-1, 3),
-                          a[:, mx:2 * mx].reshape(-1, 3), a[:, -2 * mx:-mx].reshape(-1, 3)])
-    gutter = (np.abs(a - np.median(rim, axis=0)).max(axis=2) < 40) | (a.min(axis=2) > 225)
+    """Panels in western reading order. The gutters + margins form one connected network of not-black paper
+    (white or yellowed newsprint, stray colour); the page is cut recursively (rows, then columns) along bands that network covers.
+    The paper-coloured inside of a caption or balloon is enclosed by its border, so it is never taken for a gutter,
+    and a lenient coverage threshold copes with slightly skewed scans. Each cell is then tightened to its art."""
+    g = np.asarray(img.convert("L"))
+    h, w = g.shape
+    nets = gutter_nets(g)
+    t = max(3, round(0.012 * max(h, w))) | 1  # skew tolerance: a slanted gutter only needs to pass within t/2 px
+    net = nets[2]
     out = []
 
     def cut(x0, y0, x1, y1, axis, flipped):  # axis 0: split on horizontal gutters (rows), 1: vertical (columns)
-        prof = gutter[y0:y1, x0:x1].mean(axis=1 - axis) >= 0.88
+        prof = nets[axis][y0:y1, x0:x1].mean(axis=1 - axis) >= 0.9  # gutter = crosses the whole cell
         spans, i, size = [], 0, (h, w)[axis]
         while i < len(prof):
             j = i
             while j < len(prof) and not prof[j]:
                 j += 1
-            if j - i >= 0.03 * size:  # ignore slivers: page headers, specks
+            if j - i >= 0.03 * size:  # ignore slivers: specks, page numbers
                 spans.append((i, j))
             i = j + 1
+        lim = (y1 - y0, x1 - x0)[axis]
+        spans = [(max(i - t // 2, 0), min(j + t // 2, lim)) for i, j in spans]  # undo the thickening
         boxes = [(x0, y0 + i, x1, y0 + j) if axis == 0 else (x0 + i, y0, x0 + j, y1) for i, j in spans]
         if len(boxes) > 1 or (boxes and not flipped):
             for b in boxes:
                 cut(*b, 1 - axis, len(boxes) == 1)
-        elif boxes and (boxes[0][2] - boxes[0][0]) * (boxes[0][3] - boxes[0][1]) > 0.02 * w * h:
-            out.append(boxes[0])
+        elif boxes:
+            bx0, by0, bx1, by1 = boxes[0]
+            ys, xs = np.nonzero(~net[by0:by1, bx0:bx1])  # tighten the cell to its art (keeps a skewed panel whole)
+            if len(xs) and (bx1 - bx0) * (by1 - by0) > 0.02 * w * h:
+                out.append((bx0 + int(xs.min()), by0 + int(ys.min()), bx0 + int(xs.max()) + 1, by0 + int(ys.max()) + 1))
 
     cut(0, 0, w, h, 0, False)
+    dark = g < 110
+    for n, (x0, y0, x1, y1) in enumerate(out):  # a borderless caption printed on the paper just above its panel
+        roof = max([o[3] for o in out if o[3] <= y0 and o[0] < x1 and o[2] > x0], default=0)
+        top, gap = y0, 0
+        for y in range(y0 - 1, max(roof, y0 - round(0.08 * h)), -1):
+            if dark[y, x0:x1].sum() >= 3:
+                top, gap = y, 0
+            elif (gap := gap + 1) > 0.012 * h:  # a text line gap is ~0.5%; anything wider ends the caption
+                break
+        if top < y0:
+            out[n] = (x0, max(top - round(0.003 * h), roof), x1, y1)
     return out or [(0, 0, w, h)]
+
+
+def snap(rect, boxes, edges=lambda r: r):
+    """A hand-framed page box -> whole panels, so a crop never slices one:
+    - a zoom well inside one big panel (a splash page, a close-up) stays, clipped to that panel;
+    - when less than half the box is detected art (the detector missed a title or text block), the box stays,
+      grown over every panel it cuts into;
+    - otherwise the panels at least 60% inside the box, or else the one it overlaps most."""
+    x0, y0, x1, y1 = rect
+    area = lambda b: max(b[2] - b[0], 0) * max(b[3] - b[1], 0)
+    union = lambda bs: (min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs))
+    clip = lambda b: (max(b[0], x0), max(b[1], y0), min(b[2], x1), min(b[3], y1))
+    for b in boxes:
+        if area(clip(b)) >= 0.6 * area(rect) and area(rect) <= 0.6 * area(b):  # margins make up the rest
+            x0, y0, x1, y1 = rect = edges(rect)  # a page the detector could not split: at least land on gutters
+            return clip(b)
+    if sum(area(clip(b)) for b in boxes) < 0.5 * area(rect):
+        x0, y0, x1, y1 = rect = edges(rect)
+        return union([rect] + [b for b in boxes if area(clip(b)) >= 0.3 * area(b)])
+    share = {b: area(clip(b)) / area(b) for b in boxes}
+    best = max(share.values())
+    return union([b for b in boxes if share[b] >= 0.6] or [b for b in boxes if share[b] >= best - 0.05])
 
 
 def desk(w, h):
@@ -148,11 +231,11 @@ def desk(w, h):
     return Image.fromarray(lum.astype(np.uint8)).resize((w, h), Image.BILINEAR)
 
 
-def page_focus(spec, boxes, pw, ph):
+def page_focus(spec, boxes, pw, ph, nets=None):
     """'#3' = third panel, '@x0,y0,x1,y1' = manual box as page fractions, nothing = whole page."""
     if "@" in spec:
         x0, y0, x1, y1 = map(float, spec.split("@")[1].split(","))
-        return x0 * pw, y0 * ph, x1 * pw, y1 * ph
+        return snap((x0 * pw, y0 * ph, x1 * pw, y1 * ph), boxes, (lambda r: to_gutters(r, nets, pw, ph)) if nets else (lambda r: r))
     if "#" in spec:
         n = int(spec.split("#")[1])
         if not 1 <= n <= len(boxes):
@@ -330,6 +413,7 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     """Scene -> (canvas BGR, overlays, camera keys, panel reveal fn)."""
     cw, ch = round(C.CW * scale), round(C.CH * scale)
     tpl, k, acc, st = s["template"], C.k, C.accent, C.style
+    vis = 0.76 if bars(st) and W > H else 1.0  # share of the frame height the letterbox bars leave visible
     imgs = [C.image(x) for x in s["images"]]
     lead = tl["Tf"] / 2 / C.fps
     L = (tl["F"] + tl["out"]) / C.fps
@@ -356,8 +440,8 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     elif tpl == "issue":  # the real cover on the desk, details beside it: caption "FANTASTIC FOUR #48|MARCH 1966|LEE & KIRBY"
         cover = C.page(s["page"])[0]
         canvas = desk(cw, ch)
-        cover = cover.resize((round(ch * .8 * cover.width / cover.height), round(ch * .8)), Image.LANCZOS)
-        x, y = round(cw * .12), round(ch * .1)
+        cover = cover.resize((round(ch * .8 * vis * cover.width / cover.height), round(ch * .8 * vis)), Image.LANCZOS)
+        x, y = round(cw * .12), round(ch * (1 - .8 * vis) / 2)
         shadow = Image.new("L", canvas.size, 0)
         shadow.paste(170, (x + 14, y + 18, x + cover.width + 14, y + cover.height + 18))
         canvas.paste((0, 0, 0), mask=shadow.filter(ImageFilter.GaussianBlur(14)))
@@ -367,9 +451,9 @@ def build(s, tl, W, H, scale=1.0, captions=True):
             over.append(prep(comic.card_text("issue", W, H, acc, title=parts[0], kicker=parts[1], text=parts[2]), 0, 0, lead + 0.3))
         keys = [(0, 1.0, .5, .5), (1, 1.07, .44, .5)]
     elif tpl == "page":
-        img, boxes = C.page(s["page"])
+        img, boxes, nets = C.page(s["page"])
         pw, ph = img.size
-        cw = max(pw * 1.06, ph * 1.06 * W / H)  # dark board in the frame's aspect, whole page visible at zoom 1
+        cw = max(pw * 1.06, ph * 1.06 * W / (H * vis))  # board in the frame's aspect, whole page clear of the bars
         ch = cw * H / W
         ox, oy = (cw - pw) / 2, (ch - ph) / 2
         canvas = desk(round(cw), round(ch))  # the page lies on a lamp-lit desk with a soft shadow, like a real book
@@ -380,13 +464,13 @@ def build(s, tl, W, H, scale=1.0, captions=True):
 
         def frame_on(rect, push=1.0):  # camera key that fits a page rectangle with a little air around it
             x0, y0, x1, y1 = rect
-            vw = max((x1 - x0) * 1.08, (y1 - y0) * 1.08 * W / H)
+            vw = max((x1 - x0) * 1.08, (y1 - y0) * 1.08 * W / (H * vis))  # fits between the letterbox bars
             return max(cw / vw, 1.0) * push, (ox + (x0 + x1) / 2) / cw, (oy + (y0 + y1) / 2) / ch
 
         prev = tl.get("prev") or {}
         same = prev.get("template") == "page" and page_file(prev) == page_file(s)
-        start = frame_on(page_focus(prev["page"], boxes, pw, ph)) if same else frame_on((0, 0, pw, ph))
-        target = page_focus(s["page"], boxes, pw, ph)
+        start = frame_on(page_focus(prev["page"], boxes, pw, ph, nets)) if same else frame_on((0, 0, pw, ph))
+        target = page_focus(s["page"], boxes, pw, ph, nets)
         if target != (0, 0, pw, ph):  # spotlight the panel being explained: dim the page, outline the panel
             box = tuple(round(v) for v in (ox + target[0], oy + target[1], ox + target[2], oy + target[3]))
             lit = canvas.crop(box)
@@ -836,6 +920,21 @@ def _selfcheck():
         page.paste((60, 60, 60), (x0, y0, x1, y1))
     got = [b[:2] for b in panel_boxes(page)]
     assert got == [(40, 40), (40, 540), (520, 540), (520, 1020)], got
+    B = panel_boxes(page)
+    assert snap((0, 0, 1000, 555), B)[1::2] == (40, 500)  # a tier box past a gutter -> just the top panel
+    assert snap((0, 0, 1000, 1500), [(0, 0, 100, 100)]) == (0, 0, 1000, 1500)  # detector missed the art: keep box
+    assert snap((0, 0, 1000, 700), [(0, 0, 100, 100), (0, 600, 300, 900)]) == (0, 0, 1000, 900)  # never slice one
+    assert snap((100, 100, 300, 300), [(0, 0, 1000, 1000)]) == (100, 100, 300, 300)  # a zoom inside a splash
+    assert snap((0, 450, 1000, 1000), B) == (520, 540, 960, 980)  # a tall panel only half inside stays out
+    rn = np.zeros((1000, 1000), bool)  # to_gutters: row gutters at 300 and 700, a weaker band just above 700
+    rn[295:305] = rn[690:710] = True
+    rn[650:690, :400] = True
+    cn = np.zeros((1000, 1000), bool)
+    cn[700:, 490:510] = True
+    got = to_gutters((0, 320, 1000, 1000), (rn, cn), 1000, 1000)
+    assert abs(got[1] - 300) <= 2, got
+    got = to_gutters((560, 730, 1000, 1000), (rn, cn), 1000, 1000)
+    assert abs(got[0] - 500) <= 2 and abs(got[1] - 700) <= 2, got  # the strongest peak, not the weak band
 
 
 if __name__ == "__main__":

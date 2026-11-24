@@ -125,7 +125,7 @@ def main(plan_path, imgdir, audiodir, outdir):
         scenes = [dict(s, transition="cut", hold=0.0) for s in sc[i:j + 1]]
         hook = h.get("hook_text") or scenes[0]["caption"] or V.get("thumbnail_text", "")
         if h.get("hook_line") and f"hook{h['n']}" in meta:  # spoken cold-open line before the clip
-            scenes.insert(0, dict(scenes[0], voice_key=f"hook{h['n']}", narration=h["hook_line"], sfx="impact",
+            scenes.insert(0, dict(scenes[0], voice_key=f"hook{h['n']}", narration=h["hook_line"], sfx="",  # no sound effects on cuts
                                   sfx_text="", caption=""))
         if "cta" in meta:  # funnel: stop on the cliffhanger, then send viewers to the long video for the ending
             scenes.append(dict(scenes[-1], voice_key="cta", narration=S["shorts_cta"], sfx="", sfx_text="", caption=""))

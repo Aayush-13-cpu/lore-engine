@@ -160,7 +160,7 @@ def build(vid, subset="", path=SHEET):
                     name = f"s{n:03d}_{k}.png"
                     # seed from the shot text, not the row number: inserting a scene must not re-roll later art
                     images.append(dict(name=name, prompt=scene_prompt(style, v, cast_rows), seed=seed(vid, v),
-                                       refs=[f"ref_{c}.png" for c in cast[:2]]))
+                                       refs=[f"ref_{c}.png" for c in cast[:2]], visual=v, cast=cast[:2]))  # raw: Flow
                     s["images"].append(name)
                     cast_ids += cast[:2]
                     if k == 0:
@@ -187,7 +187,8 @@ def build(vid, subset="", path=SHEET):
     if str(video.get("thumbnail_prompt", "")).strip():
         tids = [c for c in ids(video.get("thumbnail_characters", "")) if c in chars]
         images.append(dict(name="thumb.png", prompt=scene_prompt(style, video["thumbnail_prompt"], [chars[c] for c in tids]),
-                           seed=seed(vid, "thumb"), refs=[f"ref_{c}.png" for c in tids[:2]]))
+                           seed=seed(vid, "thumb"), refs=[f"ref_{c}.png" for c in tids[:2]],
+                           visual=str(video["thumbnail_prompt"]).strip(), cast=tids[:2]))
         cast_ids += tids[:2]
 
     refs = []
@@ -199,7 +200,7 @@ def build(vid, subset="", path=SHEET):
             errors.append(f"character {c}: ref_page must be <page>@x0,y0,x1,y1 on an existing page "
                           f"({source_problem(mc.group(1)) if mc else 'bad format'})")
         refs.append(dict(
-            name=f"ref_{c}.png", asset=f"assets/characters/{c}.png", seed=int(num(ch.get("seed"), seed(c))), refs=[],
+            name=f"ref_{c}.png", asset=f"assets/characters/{c}.png", seed=int(num(ch.get("seed"), seed(c))), refs=[], char=c,
             crop=crop,
             prompt=f"{style['prompt_prefix']} Character reference sheet of {ch['name']}: {ch['look']}. Single full figure, "
                    f"three-quarter view, standing, plain light grey studio background, even lighting. {style['prompt_suffix']}"))
