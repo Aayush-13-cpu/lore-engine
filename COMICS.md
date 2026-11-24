@@ -31,13 +31,25 @@ one DMCA notice can take down this repo or strike the channel.
 These are fetched straight from Wikimedia Commons by the runners (Sources tab), so you don't need to download anything.
 To find more: browse Commons `Category:Scanned_English_comic_books_in_DjVu`. Read every page, then write the Scenes rows tier by tier.
 
+Content plan v2 (2026-11-24): the full list of 24 videos lives in the sheet's **Videos** tab.
+
 | Video | Comic | Pages used |
 |---|---|---|
-| VID007 | Eerie #12 (Avon, 1953), Dracula | 1-28 |
-| VID008 | Amazing Man Comics #5 (Centaur, 1939) | 1, 4-13 |
-| VID009 | City of the Living Dead (Avon, 1952) | tales on 3-9, 12-17, 19-24 (Congo tale skipped) |
-| VID010 | Frankenstein #27 (Prize, 1953), "Frozen Alive" | 1, 5-16 |
-| VID011 | Eerie #9 (Avon) | tales on 4-8, 10-16, 23-26 |
+| VID003 | Eerie #12 (Avon, 1953), Dracula | 1-28 |
+| VID004 | Amazing Man Comics #5 (Centaur, 1939) | 1, 4-13 |
+| VID006 | Frankenstein #27 (Prize, 1953), "Frozen Alive" | 1, 5-16 |
+| VID008 | City of the Living Dead (Avon, 1952) | tales on 3-9, 12-17, 19-24 (Congo tale skipped) |
+| VID010 | Eerie #9 (Avon) | tales on 4-8, 10-16, 23-26 |
+| VID012 | Baffling Mysteries #21 (Ace) | to script (Commons, 35 pages) |
+| VID014 | Justice Traps the Guilty #4 (Prize, 1948, Simon & Kirby) | to script (Commons, 52 pages) |
+| VID016 | Daredevil Battles Hitler (Lev Gleason, 1941) | to script (Commons; pages already in Sources) |
+| VID018 | Blazing Comics #3 (1944), the Green Turtle | to script (Commons) |
+| VID020 | Fantastic Comics (Fox, 1939-40), Stardust | download from Comic Book Plus |
+| VID022 | Jungle Comics (Fiction House, 1940-41), Fantomah | Commons page + Comic Book Plus |
+| VID024 | Famous Crime #8 (Fox) | to script (Commons) |
+
+The **flow** videos (VID001, VID002, VID005...) need no comics: they are public-domain legends, every picture drawn in Google Flow.
+The Marvel / DC lists below are kept for reference only (Flow refuses copyrighted characters; see the sheet's Archive tab).
 
 `ID` is what to name the folder (`comics/<id>`). **verify** = double-check the issue number on Fandom before buying.
 
