@@ -154,6 +154,43 @@ def attach(page, path):
         raise RuntimeError(f"{name} did not reach the prompt box")
 
 
+ERROR = re.compile(r"something went wrong", re.I)
+POLICY = re.compile(r"might violate our policies", re.I)
+
+
+def generate(page, box, P, batch, attached):
+    """Send one batch and collect its images -> ({tag: src}, why) with why in ok / error / policy / timeout.
+    Flow's error and policy messages are noticed at once instead of waiting out the timeout."""
+    seen = {s for s, _ in results(page)}
+    errs, refusals = page.get_by_text(ERROR).count(), page.get_by_text(POLICY).count()
+    box.fill(batch_prompt(P, batch, attached))
+    page.get_by_role("button", name="Start generation").click()
+    t0, todo, new, why = time.time(), {tag(j): j for j in batch}, [], "timeout"
+    while time.time() - t0 < WAIT_S + 60 * len(batch):
+        time.sleep(6)
+        new = [(s, a) for s, a in results(page) if s not in seen]
+        if len(new) >= len(batch):
+            time.sleep(4)  # let the last thumbnails settle
+            new, why = [(s, a) for s, a in results(page) if s not in seen], "ok"
+            break
+        if page.get_by_text(ERROR).count() > errs or page.get_by_text(POLICY).count() > refusals:
+            time.sleep(8)  # the rest of the batch may still be landing
+            new = [(s, a) for s, a in results(page) if s not in seen]
+            why = "policy" if page.get_by_text(POLICY).count() > refusals else "error"
+            break
+    got = {}
+    for s, a in new:  # exact match on the tag Flow repeated at the start of the image's prompt
+        m = re.match(r"\s*([A-Z]+\d*_?[A-Z0-9_]*)\s*:", a.upper())
+        if m and m.group(1) in todo and m.group(1) not in got:
+            got[m.group(1)] = s
+    if why == "ok":  # untagged results of a complete batch: in the order the shots were listed
+        rest = [s for s, _ in new if s not in got.values()]
+        for t in todo:
+            if t not in got and rest:
+                got[t] = rest.pop(0)
+    return got, why
+
+
 def main(plan_path, out):
     P = json.load(open(plan_path))
     vid = P["video"]["video_id"]
@@ -193,7 +230,7 @@ def main(plan_path, out):
                for k in range(0, len(g), size)]
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(PROFILE, channel="chrome", headless=False, viewport=None,
-                                                    args=["--start-maximized"],
+                                                    args=["--start-maximized"], chromium_sandbox=True,  # no warning bar
                                                     # Playwright's default 'basic' store can't decrypt the login
                                                     # cookies normal Chrome saved via the keyring: you'd be signed out
                                                     ignore_default_args=["--password-store=basic"])
@@ -225,34 +262,25 @@ def main(plan_path, out):
                     except Exception as e:  # draw it anyway from the written design; say so
                         print(f"  could not attach {c}'s reference ({e.__class__.__name__})", flush=True)
                         page.keyboard.press("Escape")
-            seen = {s for s, _ in results(page)}
-            box.fill(batch_prompt(P, batch, attached))
-            page.get_by_role("button", name="Start generation").click()
-            t0, todo = time.time(), {tag(j): j for j in batch}
-            new = []
-            while time.time() - t0 < WAIT_S + 60 * len(batch):
-                time.sleep(6)
-                new = [(s, a) for s, a in results(page) if s not in seen]
-                if len(new) >= len(batch):
-                    time.sleep(4)  # let the last thumbnails settle
-                    new = [(s, a) for s, a in results(page) if s not in seen]
-                    break
-            got = {}
-            for s, a in new:  # exact match on the tag Flow repeated at the start of the image's prompt
-                m = re.match(r"\s*([A-Z]+\d*_?[A-Z0-9_]*)\s*:", a.upper())
-                if m and m.group(1) in todo and m.group(1) not in got:
-                    got[m.group(1)] = s
-            rest = [s for s, _ in new if s not in got.values()]
-            for t in todo:  # untagged results: in the order the shots were listed
-                if t not in got and rest:
-                    got[t] = rest.pop(0)
-            for t, j in todo.items():
+            t0 = time.time()
+            got, why = generate(page, box, P, batch, attached)
+            if why == "error":  # Flow's "Something went wrong": send the same batch once more
+                print(f"  batch {bi}: Flow error, retrying", flush=True)
+                more, why = generate(page, box, P, [j for j in batch if tag(j) not in got], attached)
+                got.update(more)
+            if len(batch) > 1:  # whatever is still missing goes alone: one bad shot must not sink the others
+                for j in [j for j in batch if tag(j) not in got]:
+                    more, why = generate(page, box, P, [j], attached)
+                    got.update(more)
+                    if tag(j) not in got:
+                        print(f"  {j['name']}: {'refused by Flow (policy)' if why == 'policy' else 'Flow ' + why}", flush=True)
+            for j in batch:
                 done += 1
-                if t not in got:
-                    print(f"[{done}/{len(jobs)}] {j['name']}: no image (blocked prompt?), skipped", flush=True)
+                if tag(j) not in got:
+                    print(f"[{done}/{len(jobs)}] {j['name']}: no image, skipped (reword this shot)", flush=True)
                     continue
                 dst = os.path.join(out, j["name"])
-                save(page, got[t], dst)
+                save(page, got[tag(j)], dst)
                 w, h = Image.open(dst).size
                 print(f"[{done}/{len(jobs)}] {j['name']} saved {w}x{h} (batch {bi}/{len(batches)}, "
                       f"{time.time() - t0:.0f}s)" + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95
