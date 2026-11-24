@@ -48,8 +48,10 @@ Content plan v2 (2026-11-24): the full list of 24 videos lives in the sheet's **
 | VID022 | Jungle Comics (Fiction House, 1940-41), Fantomah | Commons page + Comic Book Plus |
 | VID024 | Famous Crime #8 (Fox) | to script (Commons) |
 
-The **flow** videos (VID001, VID002, VID005...) need no comics: they are public-domain legends, every picture drawn in Google Flow.
-The Marvel / DC lists below are kept for reference only (Flow refuses copyrighted characters; see the sheet's Archive tab).
+The **famous** videos (VID001, VID002, VID005, VID007...) are Marvel / DC / The Boys / Invincible stories told as commentary:
+no scans needed. Google Flow draws every shot without a famous character; FLUX on the runners draws the characters
+(Characters tab, drawn_by = flux). The issue lists below are what each famous video's facts are checked against.
+VID025-VID026 are bonus public-domain legends (every picture from Flow).
 
 `ID` is what to name the folder (`comics/<id>`). **verify** = double-check the issue number on Fandom before buying.
 

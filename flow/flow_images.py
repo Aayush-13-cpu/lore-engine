@@ -1,13 +1,15 @@
-"""Videos whose comics we cannot use (Marvel, DC, The Boys, Invincible): draw the scene images with Google Flow,
-driven through your own Chrome (Flow has no API). Public-domain videos keep using their real comic pages.
-usage: python flow/flow_images.py work/plan.json out/VID001/flow
+"""Draw a video's AI shots in Google Flow, driven through your own Chrome (Flow has no API).
+usage: python flow/flow_images.py work/plan.json out/VID001/flow   (./lore.sh flow VID001 does this + the upload)
 - Opens real Chrome with a dedicated profile (~/.cache/lore-flow-profile). First run: sign in to Google yourself
   in that window; the session is remembered, and no password is ever stored by this script.
-- For each image job in the plan: types the prompt into Flow, waits for the new image, saves it as <name>.png.
-  Already-saved images are skipped, so you can stop and resume any time.
+- Mix method: characters marked drawn_by=flux in the Characters tab (Marvel, DC... which Flow refuses) are NOT sent
+  to Flow: every shot that shows them is left for FLUX on the GitHub runners. Flow draws everything else.
+- Batches: up to FLOW_BATCH (default 4) shots per message, grouped by the character references they need. Each
+  shot carries a tag (S012_0) that Flow repeats at the start of the image's own prompt, so every result is matched
+  to its scene exactly; anything untagged falls back to the order of the shots.
+- Already-saved images are skipped, so you can stop and resume any time.
 Then ./lore.sh flow uploads the folder as release 'flow-<VID>', and the render uses those images.
-
-Selectors checked live on 2026-11-24 (project chat box + "Start generation"); if Flow changes its page, fix them in main().
+Selectors checked live on 2026-11-24; if Flow changes its page, fix them in main()/attach()/results().
 """
 import base64
 import io
@@ -27,17 +29,16 @@ PROJECT_FILE = os.path.expanduser("~/.cache/lore-flow-project")  # the Flow proj
 WAIT_S = 240  # measured ~45 s per image (Nano Banana, PRO account, 2026-11-24)
 
 
-def new_images(page, seen):
-    """Large images on the page that were not there before the prompt was sent."""
+def results(page):
+    """Flow's generated images in the chat, oldest first: (src, alt). alt starts with the image's own prompt."""
     out = []
-    for img in page.locator("img").all():
+    for b in page.get_by_role("button", name="Open image in editor").all():
         try:
-            src, w = img.get_attribute("src") or "", img.evaluate("e => e.naturalWidth")
+            im = b.locator("img").first
+            out.append((im.get_attribute("src") or "", im.get_attribute("alt") or ""))
         except Exception:  # element vanished while Flow re-rendered: just look again next round
             continue
-        if src and src not in seen and w and w >= 512:
-            out.append(src)
-    return out
+    return [r for r in out if r[0]]
 
 
 def trim_frame(im):
@@ -68,8 +69,8 @@ def save(page, src, path):
         data = base64.b64decode(src.split(",", 1)[1])
     elif src.startswith("blob:"):  # blob URLs only live inside the page: read them from there
         data = bytes(page.evaluate("async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", src))
-    else:
-        data = page.request.get(src).body()
+    else:  # the chat shows a sized copy (=s512 / =s1600): =s0 asks for the original
+        data = page.request.get(re.sub(r"=s\d+(-rw)?$", "=s0", src)).body()
     trim_frame(Image.open(io.BytesIO(data)).convert("RGB")).save(path)  # Flow serves WebP; the render wants PNG
 
 
@@ -79,29 +80,51 @@ RULES = ("Quality: correct anatomy (five fingers on each hand, natural limbs, no
          "signs with writing, panel borders, gutters, split screens, frames, watermarks, signatures or logos.")
 
 
-def flow_prompt(P, j, attached):
-    """A structured brief for Flow: comic-panel look, the shot, fixed character designs, hard quality rules."""
+def tag(j):
+    """Short id Flow repeats at the start of each image's prompt: s012_0.png -> S012_0, ref_JANE.png -> REF_JANE."""
+    return os.path.splitext(j["name"])[0].upper()
+
+
+def batch_prompt(P, jobs, attached):
+    """One message for several shots: shared art direction once, then one tagged line per shot."""
     style, chars = P["style"]["prompt_prefix"], P["characters"]
-    if j.get("char"):
-        c = chars[j["char"]]
-        return (f"Create one 3:4 portrait character model sheet in this exact comic art style: {style} "
-                f"Subject: {c['name']}, full body from head to feet, neutral three-quarter standing pose, plain flat "
-                f"light-grey background, even studio lighting. Design, follow exactly: {c['look']}. {RULES}")
-    cast = [chars[c] for c in j.get("cast", []) if c in chars]
-    out = ["Create one 16:9 widescreen illustration drawn exactly like professional comic book art (inks, flat "
-           "printed colours, halftone texture), shown full-bleed: the artwork fills the whole image to all four edges, "
-           f"with no frame, border or paper margin around it. Art style: {style}",
-           f"Scene: {j.get('visual') or j['prompt']}."]
-    if cast:
-        out.append("Characters, identical to their design in every image (same face, hair, build, costume and colours): "
-                   + " ".join(f"{c['name']}: {c['look']}." for c in cast))
-    if attached:
-        names = " and ".join(chars[c]["name"] for c in attached)
-        out.append(f"The attached reference image{'s show' if len(attached) > 1 else ' shows'} the exact design of "
-                   f"{names}: match it precisely, including costume details and colours.")
-    out.append("Composition: cinematic comic-panel staging, one clear focal point, strong readable silhouettes, "
-               "dramatic lighting, believable scale.")
-    return " ".join(out + [RULES])
+    n = len(jobs)
+    head = [f"Generate {n} separate image{'s' if n > 1 else ''}, one for each tagged shot below, in this order. "
+            "Draw every shot as its own complete image; never combine shots. Begin each image's own prompt with its "
+            "tag exactly as written (for example S012_0:)."]
+    if jobs[0].get("char"):
+        head.append("Each image is a 3:4 portrait character model sheet: one character, full body from head to feet, "
+                    "neutral three-quarter standing pose, plain flat light-grey background, even studio lighting. "
+                    f"Art style: {style}")
+        shots = [f"{tag(j)}: {chars[j['char']]['name']}. Design, follow exactly: {chars[j['char']]['look']}." for j in jobs]
+    else:
+        head.append("Each image is a 16:9 widescreen illustration drawn exactly like professional comic book art (inks, "
+                    "flat printed colours, halftone texture), shown full-bleed: the artwork fills the whole image to all "
+                    f"four edges, with no frame, border or paper margin. Art style: {style}")
+        cast = [chars[c] for c in dict.fromkeys(c for j in jobs for c in j.get("cast", [])) if c in chars]
+        if cast:
+            head.append("Characters, identical to their design in every image (same face, hair, build, costume and "
+                        "colours): " + " ".join(f"{c['name']}: {c['look']}." for c in cast))
+        if attached:
+            names = " and ".join(chars[c]["name"] for c in attached)
+            head.append(f"The attached reference image{'s show' if len(attached) > 1 else ' shows'} the exact design of "
+                        f"{names}: match it precisely, including costume details and colours.")
+        head.append("Composition: cinematic comic-panel staging, one clear focal point, strong readable silhouettes, "
+                    "dramatic lighting, believable scale.")
+        shots = [f"{tag(j)}: {j.get('visual') or j['prompt']}." for j in jobs]
+    return " ".join(head + [RULES, "Shots:"]) + "\n" + "\n".join(shots)
+
+
+def flux_only(P):
+    """Character ids Flow must never be asked for, and the names that give them away in a cast-less shot."""
+    ids = {c for c, ch in P["characters"].items() if str(ch.get("drawn_by", "")).strip().lower() == "flux"}
+    names = set()
+    for c in ids:
+        ch = P["characters"][c]
+        for n in (ch.get("name", ""), ch.get("alias", "")):
+            names.update(w.strip(" ,.'") for w in re.split(r"[ /]", str(n)) if len(w.strip(" ,.'")) >= 5)
+        names.add(c.title())
+    return ids, {n.lower() for n in names}
 
 
 def attach(page, path):
@@ -148,11 +171,26 @@ def main(plan_path, out):
             im = Image.open(sources.page_image(ref, P.get("sources", {}), os.path.join(out, "pages"))).convert("RGB")
             x0, y0, x1, y1 = map(float, box.split(","))
             im.crop((round(x0 * im.width), round(y0 * im.height), round(x1 * im.width), round(y1 * im.height))).save(dst)
-    jobs = [j for j in P["refs"] + P["images"]  # refs first: every later scene is drawn against them
-            if not j.get("src") and not j.get("crop") and not os.path.exists(os.path.join(out, j["name"]))]
-    print(f"{len(jobs)} images to draw in Flow")
+    no_flow, giveaway = flux_only(P)
+    jobs, flux = [], []
+    for j in P["refs"] + P["images"]:  # refs first: every later scene is drawn against them
+        if j.get("src") or j.get("crop") or os.path.exists(os.path.join(out, j["name"])):
+            continue
+        words = set(re.findall(r"[a-z]+", str(j.get("visual") or "").lower()))
+        if j.get("char") in no_flow or set(j.get("cast", [])) & no_flow or words & giveaway:
+            flux.append(j["name"])  # left for FLUX on the runners (copyrighted character)
+        else:
+            jobs.append(j)
+    print(f"{len(jobs)} images to draw in Flow; {len(flux)} character shots left for FLUX on the runners")
     if not jobs:
         return
+    size = max(1, int(os.environ.get("FLOW_BATCH", "4")))
+    groups = {}  # same references attached -> same batch
+    for j in jobs:
+        key = ("ref",) if j.get("char") else tuple(c for c in j.get("cast", []) if c not in no_flow)
+        groups.setdefault(key, []).append(j)
+    batches = [g[k:k + size] for key in sorted(groups, key=lambda k: k != ("ref",)) for g in [groups[key]]
+               for k in range(0, len(g), size)]
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(PROFILE, channel="chrome", headless=False, viewport=None,
                                                     args=["--start-maximized"],
@@ -169,12 +207,13 @@ def main(plan_path, out):
             open(PROJECT_FILE, "w").write(page.url)
         box = page.get_by_role("textbox", name="What do you want to create?")
         box.wait_for(timeout=60000)
-        for i, j in enumerate(jobs, 1):
+        done = 0
+        for bi, batch in enumerate(batches, 1):
             while page.get_by_role("button", name="Ingredient", exact=True).count():  # chips stay after a generation
                 page.get_by_role("button", name="Ingredient", exact=True).first.click()
                 time.sleep(0.5)
             attached = []
-            for c in j.get("cast", []):
+            for c in dict.fromkeys(c for j in batch for c in j.get("cast", []) if c not in no_flow):
                 ref = os.path.join(out, f"ref_{c}.png")
                 if os.path.exists(ref):
                     tagged = os.path.join(out, "upload", f"{vid}_ref_{c}.png")  # unique name in the project's media
@@ -184,23 +223,40 @@ def main(plan_path, out):
                         attach(page, tagged)
                         attached.append(c)
                     except Exception as e:  # draw it anyway from the written design; say so
-                        print(f"  {j['name']}: could not attach {c}'s reference ({e.__class__.__name__})", flush=True)
+                        print(f"  could not attach {c}'s reference ({e.__class__.__name__})", flush=True)
                         page.keyboard.press("Escape")
-            seen = {img.get_attribute("src") for img in page.locator("img").all()}  # after attaching: refs are not results
-            box.fill(flow_prompt(P, j, attached))
+            seen = {s for s, _ in results(page)}
+            box.fill(batch_prompt(P, batch, attached))
             page.get_by_role("button", name="Start generation").click()
-            t0, got = time.time(), []
-            while time.time() - t0 < WAIT_S and not got:
-                time.sleep(5)
-                got = new_images(page, seen)
-            if not got:
-                print(f"[{i}/{len(jobs)}] {j['name']}: no image after {WAIT_S}s (blocked prompt?), skipped", flush=True)
-                continue
-            dst = os.path.join(out, j["name"])
-            save(page, got[0], dst)
-            w, h = Image.open(dst).size
-            print(f"[{i}/{len(jobs)}] {j['name']} saved {w}x{h} ({time.time() - t0:.0f}s)"
-                  + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95 else ""), flush=True)
+            t0, todo = time.time(), {tag(j): j for j in batch}
+            new = []
+            while time.time() - t0 < WAIT_S + 60 * len(batch):
+                time.sleep(6)
+                new = [(s, a) for s, a in results(page) if s not in seen]
+                if len(new) >= len(batch):
+                    time.sleep(4)  # let the last thumbnails settle
+                    new = [(s, a) for s, a in results(page) if s not in seen]
+                    break
+            got = {}
+            for s, a in new:  # exact match on the tag Flow repeated at the start of the image's prompt
+                m = re.match(r"\s*([A-Z]+\d*_?[A-Z0-9_]*)\s*:", a.upper())
+                if m and m.group(1) in todo and m.group(1) not in got:
+                    got[m.group(1)] = s
+            rest = [s for s, _ in new if s not in got.values()]
+            for t in todo:  # untagged results: in the order the shots were listed
+                if t not in got and rest:
+                    got[t] = rest.pop(0)
+            for t, j in todo.items():
+                done += 1
+                if t not in got:
+                    print(f"[{done}/{len(jobs)}] {j['name']}: no image (blocked prompt?), skipped", flush=True)
+                    continue
+                dst = os.path.join(out, j["name"])
+                save(page, got[t], dst)
+                w, h = Image.open(dst).size
+                print(f"[{done}/{len(jobs)}] {j['name']} saved {w}x{h} (batch {bi}/{len(batches)}, "
+                      f"{time.time() - t0:.0f}s)" + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95
+                                                     else ""), flush=True)
         ctx.close()
 
 
