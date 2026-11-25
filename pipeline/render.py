@@ -845,9 +845,17 @@ def mix(voice, sfx, total, out, P, work):
                "[v][duck][s]amix=inputs=3:normalize=0:duration=first,")
     else:
         fc += "[v][s]amix=inputs=2:normalize=0:duration=first,"
-    fc += f"loudnorm=I={float(S['lufs'])}:TP=-1.5:LRA=11,aresample=48000[a]"
-    run(["ffmpeg", "-y", "-loglevel", "error", "-i", vp, "-i", sp, *music,
-         "-filter_complex", fc, "-map", "[a]", "-t", f"{total:.3f}", "-ar", "48000", out])
+    ln = f"loudnorm=I={float(S['lufs'])}:TP=-1.5:LRA=11"
+    inputs = ["-i", vp, "-i", sp, *music]
+    # two-pass: measure the whole mix, then correct it linearly, so every video lands on the exact target
+    probe = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", *inputs, "-filter_complex", fc + ln + ":print_format=json[a]",
+                            "-map", "[a]", "-t", f"{total:.3f}", "-f", "null", "-"], capture_output=True, text=True)
+    m = json.loads(probe.stderr[probe.stderr.rindex("{"):probe.stderr.rindex("}") + 1]) if probe.returncode == 0 else {}
+    if m and float(m["input_i"]) > -70:  # silence (a draft with no voice) can't be measured: fall back to one pass
+        ln += (f":measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
+               f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true")
+    run(["ffmpeg", "-y", "-loglevel", "error", *inputs,
+         "-filter_complex", fc + ln + ",aresample=48000[a]", "-map", "[a]", "-t", f"{total:.3f}", "-ar", "48000", out])
 
 
 # ---------------- text outputs ----------------
