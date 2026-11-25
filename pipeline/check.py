@@ -98,6 +98,9 @@ def main(plan_path, imgdir, audiodir, outdir):
     avg = sum(d for _, d in sh) / max(len(sh), 1)
     hits = [f"scene {tl['s']['n']} {tl['hit'][0]}" for tl in tls if tl.get("hit")]
     calls = [f"scene {tl['s']['n']} {tl['s']['callout']}" for tl in tls if tl["s"].get("callout")]
+    lost = sorted({tl["s"]["callout"] for tl in tls if tl["s"].get("callout")
+                   and not os.path.exists(os.path.join(imgdir, f"cut_{tl['s']['callout']}.png"))})
+    warn += [f"green-screen picture missing, callout skipped: {', '.join(f'cut_{c}.png' for c in lost)}"] if lost else []
     lines = [f"# Render report: {P['video']['video_id']}", "",
              f"**{'FAIL' if hard else 'PASS'}**, {m['v'] / 60:.1f} min", "",
              "| Check | Result |", "|---|---|",

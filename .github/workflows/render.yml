@@ -107,6 +107,8 @@ jobs:
           path: |
             work/images/s*.png
             work/images/s*.key
+            work/images/cut_*.png
+            work/images/cut_*.key
             work/images/thumb.*
             work/images/page_*.png
             work/images/page_*.key
