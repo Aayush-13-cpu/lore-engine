@@ -238,6 +238,11 @@ jobs:
       - name: Long-form video
         env: { DRAFT: "${{ inputs.draft && '1' || '0' }}" }
         run: python -m pipeline.render work/plan.json work/images work/audio "out/$VIDEO_ID"
+      - name: Quality checks (report.md; a failure is reported after the release is published)
+        id: qa
+        run: |
+          python -m pipeline.check work/plan.json work/images work/audio "out/$VIDEO_ID" && echo ok=1 >> "$GITHUB_OUTPUT" || echo ok=0 >> "$GITHUB_OUTPUT"
+          cat "out/$VIDEO_ID/report.md" >> "$GITHUB_STEP_SUMMARY" || true
       - name: Keep character refs for approval
         run: mkdir -p "out/$VIDEO_ID/refs" && cp work/images/ref_*.png "out/$VIDEO_ID/refs/" 2>/dev/null || true
       - name: Publish as a GitHub release
@@ -248,14 +253,18 @@ jobs:
         run: |
           d="out/$VIDEO_ID"; rel=release; mkdir -p "$rel"
           ln "$d/video.mp4" "$rel/$VIDEO_ID.mp4"
-          for f in thumbnail.jpg captions.srt description.txt metadata.json shorts.json; do
+          for f in thumbnail.jpg captions.srt description.txt metadata.json shorts.json report.md; do
             [ -f "$d/$f" ] && ln "$d/$f" "$rel/$VIDEO_ID-$f"
           done
           for f in "$d"/shorts/*.mp4; do [ -f "$f" ] && ln "$f" "$rel/$VIDEO_ID-$(basename "$f")"; done
           title=$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['title'])" "$d/metadata.json")
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$VIDEO_ID: $title" --notes-file "$d/description.txt" $PRE "$rel"/*
           echo "Release: $(gh release view "$TAG" --json url -q .url)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fail the run if a quality check failed
+        if: ${{ steps.qa.outputs.ok != '1' }}
+        run: echo "::error::quality checks failed, see report.md in the release" && exit 1
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: ${{ inputs.video_id }}-final
           path: |

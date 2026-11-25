@@ -428,6 +428,15 @@ def cut_plan(keys, n, cuts, focus):
     return out
 
 
+def scene_cuts(tl):
+    """Where a line held on one AI picture is cut (s into its clip); [] = one shot (cards, pages, b-roll, static)."""
+    s = tl["s"]
+    if str(C.S.get("shot_cuts", "auto")).lower() == "off" or s["template"] != "full" or s.get("page") \
+            or s["broll"] or s["motion"] in ("static", "shake"):
+        return []
+    return cut_times(tl["words"], tl["Tf"] / 2 / C.fps, (tl["F"] + tl["out"]) / C.fps)
+
+
 def shaker(s, lead, seed):
     hand, impact = s["motion"] == "shake", s["sfx"] == "impact"
     if not (hand or impact):
@@ -725,15 +734,13 @@ def render_scene(job):
             shots = [(evidence, dict(tl, F=n1, out=0), n1, lead),
                      (dict(s, sfx=""), dict(tl, Tf=0, F=n - n1, out=0, prev=None), n - n1, 0.0)]
 
-        cut = str(C.S.get("shot_cuts", "auto")).lower() != "off" and len(shots) == 1 and s["template"] == "full" \
-            and s["motion"] not in ("static", "shake")
+        cuts = scene_cuts(tl)
 
         def shot_frames():
             for s2, tl2, count, ld in shots:
-                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H, 1.4 if cut else 1.0)  # close-ups stay sharp
+                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H, 1.4 if cuts else 1.0)  # close-ups stay sharp
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
                 depth = depth_of(canvas) if deep else None
-                cuts = cut_times(tl2["words"], ld, count / C.fps) if cut else []  # ld = voice lead here
                 plan = cut_plan(keys, count, cuts, focus_points(canvas, depth)) if cuts else [(keys, count, 0.0)]
                 if tl2.get("hit"):  # shake (and a sheet flash) on the lettered word, not at the line start
                     s2, ld = dict(s2, sfx=s2["sfx"] or "impact"), tl2["hit"][1]
