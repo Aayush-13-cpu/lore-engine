@@ -83,7 +83,7 @@ The current "static" problem: VID002 holds each AI picture for about 8 s with on
 3. **Image QA.** Tesseract text check in the redraw loop; blur and duplicate scores in the report. Install `tesseract-ocr` in the refs and images jobs.
 4. **Audio.** Two-pass loudnorm, plus an optional ambience bed from `assets/sfx/ambience/<tag>.*` (skipped when the folder is empty).
 5. **Checks and report.** `report.md` in the release; the job fails on A/V desync over 1 frame, black frames, or loudness off by more than 1 LU.
-6. **Test runs.** Draft on Actions (VID002 scenes 1-12), then a real render, plus the skill in `.claude/skills/comic-video-pipeline/` and `CLAUDE.md`.
+6. **Test runs.** Real renders of VID002 and VID003 on the branch; skill in `.claude/skills/comic-video-pipeline/SKILL.md`, repo guide in `CLAUDE.md`.
 
 Time budget: phases 1, 2, 4 and 5 add under 5 min to the clips and render jobs. Phase 3 adds a second or two per
 image, plus one redraw (30+ min) only when text is detected.
