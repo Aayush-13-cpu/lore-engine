@@ -7,6 +7,7 @@ when present, so a look you approve stays fixed across every future video.
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,23 @@ def has_gutter(path):
     return False
 
 
+def text_in(path):
+    """Real-looking words OCR reads with confidence in the art. Pictures must carry no text (the renderer letters
+    everything), and AI text is gibberish: the top slop tell. Without tesseract the check is skipped."""
+    if not shutil.which("tesseract"):
+        return []
+    from PIL import Image
+    tmp = path + ".ocr.png"
+    im = Image.open(path).convert("L")
+    im.thumbnail((1600, 1600))
+    im.save(tmp)
+    rows = subprocess.run(["tesseract", tmp, "stdout", "--psm", "11", "tsv"], capture_output=True, text=True).stdout
+    os.remove(tmp)
+    words = [r.split("\t") for r in rows.splitlines()[1:]]
+    return [w[11] for w in words if len(w) == 12 and float(w[10]) >= 80 and len(w[11]) >= 4 and w[11].isalpha()
+            and re.search("[aeiouyAEIOUY]", w[11])]
+
+
 def page_job(exe, env, j, dst):
     """Real comic page: fetch, Real-ESRGAN 4x when the scan is small, cap at 4096 px so panel close-ups stay crisp."""
     from PIL import Image
@@ -167,6 +185,7 @@ def main(plan_path, phase, shard, nshards, out):
         list(ex.map(fetch, need))
     exe = sd_cli()
     env = dict(os.environ, LD_LIBRARY_PATH=os.path.dirname(exe))
+    t_start, budget = time.time(), float(os.environ.get("REDRAW_BUDGET_MIN", 180)) * 60  # text redraws stop past this
     for i, j in enumerate(todo):
         dst = os.path.join(out, j["name"])
         if j.get("src"):
@@ -191,9 +210,15 @@ def main(plan_path, phase, shard, nshards, out):
                 if attempt == 2:
                     sys.exit(f"sd-cli failed twice on {j['name']}")
             os.replace(dst + ".tmp.png", dst)
-            if phase == "refs" or not has_gutter(dst):
+            if phase == "refs":
                 break
-            print(f"  {j['name']}: stray panel border, redrawing (take {take + 2})", flush=True)
+            text = text_in(dst) if take == 0 else []  # one text redraw at most: each take costs 30+ min
+            print(f"  {j['name']}: text check {len(text)} word(s) {' '.join(text[:6])}", flush=True)
+            bad = "stray panel border" if has_gutter(dst) else \
+                "text in the art" if len(text) >= 2 and time.time() - t_start < budget else ""
+            if not bad:
+                break
+            print(f"  {j['name']}: {bad}, redrawing (take {take + 2})", flush=True)
         open(keyfile(dst), "w").write(image_key(j, S, out))
         print(f"[{i + 1}/{len(todo)}] {j['name']} {time.time() - t:.0f}s", flush=True)
 

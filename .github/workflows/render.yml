@@ -96,7 +96,7 @@ jobs:
         with: { path: work/cache, key: "img-${{ inputs.video_id }}-${{ github.run_id }}", restore-keys: "img-${{ inputs.video_id }}-" }
       - run: |
           sudo mkdir -p "$MODELS_DIR" && sudo chown "$USER" "$MODELS_DIR"
-          sudo apt-get update -q && sudo apt-get install -y -q python3-pil p7zip-full poppler-utils
+          sudo apt-get update -q && sudo apt-get install -y -q python3-pil p7zip-full poppler-utils tesseract-ocr
       - name: Google Flow images for this video, if any (release flow-<video>)
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh release download "flow-$VIDEO_ID" -D work/flow 2>/dev/null || echo "no Flow images, generating here"
