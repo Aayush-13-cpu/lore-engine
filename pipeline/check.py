@@ -20,7 +20,7 @@ def shots(tls, fps):
     """(scene n, seconds) for every AI-picture shot, cuts included."""
     out = []
     for tl in tls:
-        if tl["s"]["template"] == "full" and not tl["s"].get("page"):
+        if tl["s"]["template"] == "full" and not tl["s"].get("page") and not tl["s"]["broll"]:
             edges = [0.0] + R.scene_cuts(tl) + [tl["F"] / fps]
             out += [(tl["s"]["n"], b - a) for a, b in zip(edges, edges[1:]) if b > a]
     return out
@@ -62,9 +62,10 @@ def probe(video):
                 frozen=[float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", log)])
 
 
-def verdict(S, sh, m):
-    """(hard failures, warnings) from the measurements."""
+def verdict(S, sh, m, stars=()):
+    """(hard failures, warnings) from the measurements. stars: (start, end) of starfield b-roll, dark on purpose."""
     hard, warn = [], []
+    m = dict(m, black=[(a, b) for a, b in m["black"] if not any(x <= a and b <= y for x, y in stars)])
     if abs(m["lufs"] - float(S["lufs"])) > 1:
         hard.append(f"loudness {m['lufs']:.1f} LUFS, target {float(S['lufs']):.0f} (±1)")
     if m["peak"] > -1.0:
@@ -89,7 +90,8 @@ def main(plan_path, imgdir, audiodir, outdir):
     tls = R.timeline(P, json.load(open(os.path.join(audiodir, "words.json"))), fps)
     sh = shots(tls, fps)
     m = probe(os.path.join(outdir, "video.mp4"))
-    hard, warn = verdict(P["settings"], sh, m)
+    stars = [(tl["start"] / fps - .5, (tl["start"] + tl["F"] + tl["out"]) / fps + .5) for tl in tls if tl["s"]["broll"] == "stars"]
+    hard, warn = verdict(P["settings"], sh, m, stars)
     blurry, dups = images(imgdir)
     warn += [f"blurry AI image(s): {', '.join(blurry)}"] if blurry else []
     warn += [f"near-identical AI images: {', '.join(f'{a}={b}' for a, b in dups)}"] if dups else []
@@ -120,6 +122,7 @@ def _selfcheck():
     assert verdict(S, [(1, 2.0)], ok) == ([], [])
     hard, warn = verdict(S, [(1, 4.2)], dict(ok, lufs=-16.5, a=58.0, black=[(3.0, 4.5)]))
     assert len(hard) == 3 and "scene 1 4.2s" in warn[0], (hard, warn)
+    assert verdict(S, [], dict(ok, black=[(132.3, 143.0)]), [(131.2, 144.3)]) == ([], [])  # warp starfield is not a hole
 
 
 if __name__ == "__main__":
