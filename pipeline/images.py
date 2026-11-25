@@ -137,7 +137,7 @@ def image_key(j, S, out):
         return hashlib.sha1(open(j["asset"], "rb").read()).hexdigest()[:16]
     refs = [open(keyfile(os.path.join(out, r))).read() for r in j["refs"]]  # a new face re-draws its scenes
     blob = [j["prompt"], j["seed"], refs, S["image_width"], S["image_height"], S["image_steps"], S["upscale"],
-            FILES["dit.gguf"], FILES["vae.safetensors"]]
+            FILES["dit.gguf"], FILES["vae.safetensors"]] + ([j["size"], j.get("upscale")] if j.get("size") else [])
     return hashlib.sha1(json.dumps(blob, default=str).encode()).hexdigest()[:16]
 
 
@@ -195,14 +195,15 @@ def main(plan_path, phase, shard, nshards, out):
             print(f"[{i + 1}/{len(todo)}] {j['name']} (comic page) {time.time() - t:.0f}s", flush=True)
             continue
         t = time.time()
+        jw, jh = j.get("size") or (w, h)  # green-screen cut-outs: portrait, composited small, so no 4x upscale
         for take in range(3):  # quality gate: a take with a stray panel border/gutter is redrawn with a new seed
             cmd = [exe, "--diffusion-model", f"{M}/dit.gguf", "--vae", f"{M}/vae.safetensors", "--llm", f"{M}/llm.gguf",
                    "--cfg-scale", "1.0", "--sampling-method", "euler", "--steps", str(int(float(S["image_steps"]))),
-                   "-W", str(w), "-H", str(h), "-s", str(j["seed"] + 1000 * take), "-p", j["prompt"],
+                   "-W", str(jw), "-H", str(jh), "-s", str(j["seed"] + 1000 * take), "-p", j["prompt"],
                    "-o", dst + ".tmp.png", "-t", str(os.cpu_count()), "--flash-attn", "on"]
             for r in j["refs"]:
                 cmd += ["-r", small_ref(os.path.join(out, r))]
-            if upscale:
+            if upscale and j.get("upscale", True):
                 cmd += ["--upscale-model", f"{M}/up.pth"]
             for attempt in (1, 2):  # one retry for flaky OOM/IO; a second failure fails the job loudly
                 if subprocess.run(cmd, env=env).returncode == 0:

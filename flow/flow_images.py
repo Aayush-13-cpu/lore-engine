@@ -109,8 +109,9 @@ def batch_prompt(P, jobs, attached):
             names = " and ".join(chars[c]["name"] for c in attached)
             head.append(f"The attached reference image{'s show' if len(attached) > 1 else ' shows'} the exact design of "
                         f"{names}: match it precisely, including costume details and colours.")
-        head.append("Composition: cinematic comic-panel staging, one clear focal point, strong readable silhouettes, "
-                    "dramatic lighting, believable scale.")
+        head.append("Composition: cinematic comic-panel staging, one clear focal subject on a rule-of-thirds line with a "
+                    "strong readable silhouette, distinct foreground, midground and background layers, believable scale. "
+                    "Lighting: a strong key light from one side, deep shadows and a bright rim light, high contrast.")
         shots = [f"{tag(j)}: {j.get('visual') or j['prompt']}." for j in jobs]
     return " ".join(head + [RULES, "Shots:"]) + "\n" + "\n".join(shots)
 
@@ -214,7 +215,7 @@ def main(plan_path, out):
         if j.get("src") or j.get("crop") or os.path.exists(os.path.join(out, j["name"])):
             continue
         words = set(re.findall(r"[a-z]+", str(j.get("visual") or "").lower()))
-        if j.get("char") in no_flow or set(j.get("cast", [])) & no_flow or words & giveaway:
+        if j.get("cutout") or j.get("char") in no_flow or set(j.get("cast", [])) & no_flow or words & giveaway:
             flux.append(j["name"])  # left for FLUX on the runners (copyrighted character)
         else:
             jobs.append(j)

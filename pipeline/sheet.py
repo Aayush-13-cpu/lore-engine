@@ -26,7 +26,7 @@ DEFAULTS = dict(
     channel_name="LORE VAULT", fps=30, width=1920, height=1080,
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
     tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
-    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
+    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", extra_images=8, cutouts=6, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
     shorts_count=1, shorts_min=25, shorts_max=58, watermark="yes",
     shorts_cta="Want to know how it ends? The full story is on my channel.",
 )
@@ -58,12 +58,32 @@ def ids(v):
     return [x.strip().upper() for x in str(v).split(",") if x.strip()]
 
 
+COMPOSE = ("Composition: one clear focal subject placed on a rule-of-thirds line, its silhouette standing out against "
+           "the background, with distinct foreground, midground and background layers for depth; a single full-bleed "
+           "widescreen illustration that fills the frame edge to edge.")
+LIGHT = ("Lighting: a strong key light from one side, deep spotted-black shadows and a bright rim light that separates the "
+         "subject from the background, high contrast and a dramatic, cinematic mood.")
+
+
 def scene_prompt(style, visual, cast):
+    """Director's-note prose, most important first: the moment, who is in it and how they look, composition,
+    lighting, then the style and the hard exclusions (FLUX.2 has no negative prompt)."""
     refs = " ".join(f"Image {i + 1} is the official look of {c['name']}: copy that exact costume, colors and face."
                     for i, c in enumerate(cast[:2]))
     looks = " ".join(f"{c['name']} drawn exactly on-model: {c['look']}." for c in cast)
-    frame = "One single full-bleed illustration filling the frame edge to edge: no panel borders, no gutters, no inset panels."
-    return " ".join(x for x in (style["prompt_prefix"], refs, f"{visual}.", looks, frame, style["prompt_suffix"]) if x)
+    return " ".join(x for x in (f"{visual.rstrip('.')}.", looks, refs, COMPOSE, LIGHT, style["prompt_prefix"],
+                                style["prompt_suffix"]) if x)
+
+
+def cutout_prompt(style, ch):
+    """One character alone on chroma green, keyed out by the renderer and slid into scenes on their name."""
+    return " ".join([
+        f"{ch['name']}, full figure from head to feet, in a strong dynamic three-quarter pose, the whole body inside the "
+        f"frame with empty space around it. {ch['name']} drawn exactly on-model: {ch['look']}.",
+        f"Image 1 is the official look of {ch['name']}: copy that exact costume, colors and face.",
+        "The background is one flat, even, pure chroma-key green (#00FF00) with no shadows, gradients, floor or scenery; "
+        "the figure is lit from the front-left with a bright rim light and outlined by a bold black ink line.",
+        style["prompt_prefix"], style["prompt_suffix"]])
 
 
 def build(vid, subset="", path=SHEET):
@@ -169,8 +189,8 @@ def build(vid, subset="", path=SHEET):
             s["images"].append(last_img)  # blank visual = keep the previous picture on screen
         elif tpl in NEEDS_IMAGE or tpl.startswith("gs:"):
             errors.append(f"scene {n}: template {tpl} needs a visual and there is no earlier image to reuse")
-        if len(s["images"]) > 1 and tpl not in ("panels", "split"):
-            errors.append(f"scene {n}: '||' gives several images but template {tpl} shows only one (use panels or split)")
+        if len(s["images"]) > 1 and tpl not in ("panels", "split", "full"):  # full: subscenes, cut on the words
+            errors.append(f"scene {n}: '||' gives several images but template {tpl} shows only one (use full, panels or split)")
         if tpl == "dossier":
             if visual:
                 errors.append(f"scene {n}: dossier uses the character's reference image; leave visual blank")
@@ -180,6 +200,35 @@ def build(vid, subset="", path=SHEET):
         if s["images"]:
             last_img = s["images"][0]
         scenes.append(s)
+
+    jobs = {j["name"]: j for j in images}
+    # a few more pictures: the longest single-picture AI lines get a close-up from another angle as a second subscene
+    for s in sorted((s for s in scenes if s["template"] == "full" and not s.get("page") and len(s["images"]) == 1
+                     and s["images"][0] in jobs and len(s["narration"].split()) >= 18),
+                    key=lambda s: -len(s["narration"].split()))[:int(num(S.get("extra_images"), 0))]:
+        j, name = jobs[s["images"][0]], f"s{s['n']:03d}_1.png"
+        v = f"A dramatic close-up from a different camera angle on the most important subject of this same moment: {j['visual']}"
+        images.append(dict(name=name, prompt=scene_prompt(style, v, [chars[c] for c in j["cast"]]), seed=seed(vid, v),
+                           refs=j["refs"], visual=v, cast=j["cast"]))
+        s["images"].append(name)
+    # green screen: a character named in an AI line whose picture doesn't show them slides in on their name
+    cut_ids, seen = [], set()
+    for s in scenes:
+        if s["template"] != "full" or s.get("page") or not s["images"] or s["characters"] \
+                or any(jobs.get(i, {}).get("cast") for i in s["images"]):  # the picture already shows someone
+            continue
+        hits = sorted((m.start(), c) for c, ch in chars.items() if str(ch.get("name", "")).strip()
+                      for m in [re.search(rf"\b{re.escape(str(ch['name']).strip())}\b", s["narration"])] if m)
+        for _, c in hits:
+            if (s["chapter"], c) not in seen and (c in cut_ids or len(cut_ids) < int(num(S.get("cutouts"), 0))):
+                seen.add((s["chapter"], c))
+                s["callout"] = c
+                cut_ids += [] if c in cut_ids else [c]
+                break
+    for c in cut_ids:
+        images.append(dict(name=f"cut_{c}.png", prompt=cutout_prompt(style, chars[c]), seed=seed(vid, "cut", c),
+                           refs=[f"ref_{c}.png"], visual="", cast=[c], cutout=True, size=[640, 1024], upscale=False))
+        cast_ids.append(c)
 
     for src, name in pages.items():  # each real page gets fetched + Real-ESRGAN upscaled on an image runner
         images.append(dict(name=name, src=src, prompt="", seed=0, refs=[]))

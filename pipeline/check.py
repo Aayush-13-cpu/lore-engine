@@ -95,6 +95,7 @@ def main(plan_path, imgdir, audiodir, outdir):
     warn += [f"near-identical AI images: {', '.join(f'{a}={b}' for a, b in dups)}"] if dups else []
     avg = sum(d for _, d in sh) / max(len(sh), 1)
     hits = [f"scene {tl['s']['n']} {tl['hit'][0]}" for tl in tls if tl.get("hit")]
+    calls = [f"scene {tl['s']['n']} {tl['s']['callout']}" for tl in tls if tl["s"].get("callout")]
     lines = [f"# Render report: {P['video']['video_id']}", "",
              f"**{'FAIL' if hard else 'PASS'}**, {m['v'] / 60:.1f} min", "",
              "| Check | Result |", "|---|---|",
@@ -103,6 +104,8 @@ def main(plan_path, imgdir, audiodir, outdir):
              f"| AI shots | {len(sh)} shots on {len({n for n, _ in sh})} pictures, average {avg:.1f} s, "
              f"longest {max((d for _, d in sh), default=0):.1f} s |",
              f"| Lettering on the word | {', '.join(hits) or 'none'} |",
+             f"| Subscenes (lines with 2+ pictures) | {sum(len(tl['s']['images']) > 1 for tl in tls if tl['s']['template'] == 'full')} |",
+             f"| Green-screen callouts | {', '.join(calls) or 'none'} |",
              f"| Black over 1 s | {len(m['black'])} |", f"| Frozen over 6 s | {len(m['frozen'])} |", ""]
     lines += ["## Failures", *[f"- {x}" for x in hard], ""] if hard else []
     lines += ["## Warnings", *[f"- {x}" for x in warn], ""] if warn else []

@@ -339,10 +339,12 @@ def prep(img, x, y, t_in, pop=False):
 
 def blend(frame, ov, tau):
     img, x, y, t_in, pop = ov
-    a = min((tau - t_in) / 0.22, 1.0)
+    a = min((tau - t_in) / (0.35 if pop in ("left", "right") else 0.22), 1.0)
     if a <= 0:
         return
-    if pop and a < 1:  # SFX lettering slams in from 135%
+    if pop in ("left", "right"):  # a green-screen character slides in from that side, easing out
+        x = int(x + (-1 if pop == "left" else 1) * frame.shape[1] * .14 * (1 - a) ** 3)
+    elif pop and a < 1:  # SFX lettering slams in from 135%
         sc = 1 + 0.35 * (1 - a)
         h0, w0 = img.shape[:2]
         img = cv2.resize(img, None, fx=sc, fy=sc)
@@ -414,27 +416,33 @@ def focus_points(canvas, depth=None):
 
 
 def cut_plan(keys, n, cuts, focus):
-    """[(keys, frames, t0)]: shot 1 keeps the scene's own move (the wide); then close on the subject and medium on
-    the whole group alternate, so no two neighbours share a framing. Every shot still drifts a little."""
-    edges = [0] + [round(t * C.fps) for t in cuts] + [n]
-    out = []
+    """[(picture, keys, frames, t0)]: every picture (subscene) opens on its own move, the wide; then close-ups on the
+    subject and mediums on the group alternate across the pictures, so no two neighbours share a framing."""
+    m, edges, out = len(keys), [0] + [round(t * C.fps) for t in cuts] + [n], []
     for j, (a, b) in enumerate(zip(edges, edges[1:])):
-        if j:
-            fx, fy = focus[0] if j % 2 else focus[1]
-            z, d = (1.75, .03) if j % 2 else (1.3, .05)  # >=30% size change between neighbours: no jump cuts
-            d *= 1 if j % 4 < 2 else -1
-            keys = [(0, z, fx - d, fy), (1, z * 1.05, fx + d, fy)]
-        out.append((keys, b - a, a / C.fps))
+        p, k = j % m, keys[j % m]
+        if j >= m:
+            r = j - m + 1
+            fx, fy = focus[p][0] if r % 2 else focus[p][1]
+            z, d = (1.75, .03) if r % 2 else (1.3, .05)  # >=30% size change between neighbours: no jump cuts
+            d *= 1 if r % 4 < 2 else -1
+            k = [(0, z, fx - d, fy), (1, z * 1.05, fx + d, fy)]
+        out.append((p, k, b - a, a / C.fps))
     return out
 
 
 def scene_cuts(tl):
     """Where a line held on one AI picture is cut (s into its clip); [] = one shot (cards, pages, b-roll, static)."""
     s = tl["s"]
-    if str(C.S.get("shot_cuts", "auto")).lower() == "off" or s["template"] != "full" or s.get("page") \
-            or s["broll"] or s["motion"] in ("static", "shake"):
+    m = len(s["images"]) if s["template"] == "full" else 1  # subscenes: several pictures on one line
+    L = (tl["F"] + tl["out"]) / C.fps
+    even = [L * k / m for k in range(1, m)]
+    if s["template"] != "full" or s.get("page") or s["broll"]:
         return []
-    return cut_times(tl["words"], tl["Tf"] / 2 / C.fps, (tl["F"] + tl["out"]) / C.fps)
+    if str(C.S.get("shot_cuts", "auto")).lower() == "off" or (m == 1 and s["motion"] in ("static", "shake")):
+        return even  # old look, but every picture still gets its share of the line
+    cuts = cut_times(tl["words"], tl["Tf"] / 2 / C.fps, L)
+    return cuts if len(cuts) >= m - 1 else even
 
 
 def shaker(s, lead, seed):
@@ -580,6 +588,15 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     if captions and s["caption"] and tpl not in CARDS | {"split", "issue"}:
         over.append(prep(comic.caption_box(s["caption"], st.get("caption_bg") or "#F6E27A", st.get("caption_fg") or "#111111"),
                          60, 160 if bars(st) else 50, lead + 0.3))  # clear of the letterbox bar
+    if s.get("callout") and W >= H:  # green screen: the named character slides in on their name
+        name = str(C.P["characters"].get(s["callout"], {}).get("name", "")).split()
+        at = next((lead + a for w, a, _ in tl["words"] if name and re.sub(r"[^a-z]", "", w.lower()) ==
+                   re.sub(r"[^a-z]", "", name[0].lower())), lead + 0.5)
+        fig = cutout(f"cut_{s['callout']}.png", canvas, round(H * .68 * vis))
+        if fig is not None:
+            left = s["n"] % 2 == 1
+            over.append(prep(fig, round(W * .03) if left else round(W * .97) - fig.width,
+                             round(H * (1 + vis) / 2) - round(fig.height * .94), at, "left" if left else "right"))
     text, at = tl.get("hit") or (s["sfx_text"], lead)
     if text:
         im = comic.sfx_word(text.upper(), st.get("sfx_color") or "#FFE14D")
@@ -587,6 +604,44 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     if keys is None:
         keys = motion_keys(s, tl["i"], L, lead)
     return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR), [o for o in over if o], keys, reveal
+
+
+def cutout(name, scene, height):
+    """Green-screen character -> RGBA figure, lightly colour-matched to the scene, with an ink outline and a contact
+    shadow so it sits in the art; None when the key fails (a draft placeholder, or a background that isn't green)."""
+    if not os.path.exists(os.path.join(C.imgdir, name)):
+        return None
+    rgb = np.asarray(Image.open(os.path.join(C.imgdir, name)).convert("RGB"))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    green = ((hsv[..., 0] > 40) & (hsv[..., 0] < 85) & (hsv[..., 1] > 90) & (hsv[..., 2] > 70)).astype(np.uint8)
+    _, lab = cv2.connectedComponents(green)
+    edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+    bg = np.isin(lab, edge[edge > 0])  # only green joined to the border: a green cape inside the ink line stays...
+    bg |= (hsv[..., 0] > 50) & (hsv[..., 0] < 70) & (hsv[..., 1] > 200) & (hsv[..., 2] > 200)  # ...but pure chroma
+    # green trapped between an arm and the body is background too
+    alpha = cv2.erode((~bg).astype(np.uint8) * 255, np.ones((3, 3), np.uint8))
+    if not .02 <= alpha.mean() / 255 <= .95:
+        return None
+    near = cv2.dilate(bg.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)  # despill the rim only
+    rgb = rgb.copy()
+    rgb[..., 1] = np.where(near, np.minimum(rgb[..., 1], np.maximum(rgb[..., 0], rgb[..., 2])), rgb[..., 1])
+    f = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    r = cv2.cvtColor(cv2.resize(np.asarray(scene.convert("RGB")), (256, 144)), cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32)
+    m = alpha > 128
+    fm, fs, rm, rs = f[m].mean(0), f[m].std(0) + 1e-6, r.mean(0), r.std(0) + 1e-6
+    f += np.float32([.35, .2, .2]) * ((f - fm) / fs * rs + rm - f)  # a light pull towards the scene's light and palette
+    rgb = cv2.cvtColor(np.clip(f, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    pad = 24
+    rgb, alpha = (np.pad(x, ((pad, pad), (pad, pad)) + ((0, 0),) * (x.ndim - 2)) for x in (rgb, alpha))
+    a = cv2.GaussianBlur(alpha, (3, 3), 0).astype(np.float32)[..., None] / 255
+    ink = cv2.dilate(alpha, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))).astype(np.float32)[..., None] / 255
+    shadow = np.roll(cv2.GaussianBlur(ink[..., 0], (0, 0), 7), (14, 10), (0, 1))[..., None] * .35
+    out_a = a + ink * (1 - a)
+    out_a = out_a + shadow * (1 - out_a)
+    col = (rgb * a + np.float32([12, 12, 14]) * ink * (1 - a)) / np.maximum(a + ink * (1 - a), 1e-6)
+    fig = Image.fromarray(np.dstack([col, out_a * 255]).astype(np.uint8), "RGBA")
+    fig = fig.crop(fig.getchannel("A").getbbox())  # the figure itself sets the height, not the empty green around it
+    return fig.resize((round(fig.width * height / fig.height), height), Image.LANCZOS)
 
 
 def depth_of(canvas):
@@ -738,14 +793,19 @@ def render_scene(job):
 
         def shot_frames():
             for s2, tl2, count, ld in shots:
-                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H, 1.4 if cuts else 1.0)  # close-ups stay sharp
+                pics = s2["images"] if cuts and len(shots) == 1 else s2["images"][:1]
+                sets = [build(dict(s2, images=[p]), tl2, C.W, C.H, 1.4 if cuts else 1.0) for p in pics] or \
+                    [build(s2, tl2, C.W, C.H)]  # 1.4x canvas: close-ups stay sharp
+                over, reveal = sets[0][1], sets[0][3]
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
-                depth = depth_of(canvas) if deep else None
-                plan = cut_plan(keys, count, cuts, focus_points(canvas, depth)) if cuts else [(keys, count, 0.0)]
+                depths = [depth_of(x[0]) if deep else None for x in sets]
+                keys = [sets[0][2]] + [PRESETS[AUTO_M[(tl["i"] + p) % len(AUTO_M)]] for p in range(1, len(sets))]
+                plan = cut_plan(keys, count, cuts, [focus_points(x[0], d) for x, d in zip(sets, depths)]) if cuts \
+                    else [(0, keys[0], count, 0.0)]
                 if tl2.get("hit"):  # shake (and a sheet flash) on the lettered word, not at the line start
                     s2, ld = dict(s2, sfx=s2["sfx"] or "impact"), tl2["hit"][1]
-                for k2, c2, t0 in plan:
-                    yield from frames(canvas, k2, c2, C.W, C.H, over, s2, ld, reveal, seed, depth, t0)
+                for p, k2, c2, t0 in plan:
+                    yield from frames(sets[p][0], k2, c2, C.W, C.H, over, s2, ld, reveal, seed, depths[p], t0)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
         encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
@@ -1040,6 +1100,12 @@ def _selfcheck():
     shots = [b - a for a, b in zip([0] + cuts, cuts + [5.4])]
     assert cuts and all(1.2 <= d <= 3.5 for d in shots), shots
     assert len(cut_times(words[:4], .2, 3.0)) == 0  # short lines stay one shot
+    global C
+    C, old = type("C", (), dict(fps=30))(), C
+    plan = cut_plan(["wideA", "wideB"], 300, [2, 4, 6, 8], [((.4, .4), (.5, .5))] * 2)
+    assert [p for p, *_ in plan] == [0, 1, 0, 1, 0] and plan[1][1] == "wideB", plan  # both pictures open on a wide
+    assert all(a[1] != b[1] for a, b in zip(plan, plan[1:])) and sum(x[2] for x in plan) == 300
+    C = old
     tl = lambda text, v: dict(s=dict(template="full", sfx_text=text), Tf=6, voice=v, words=[("He", 0, .2), ("snapped", .3, .7)])
     tls = [tl("", 0), tl("", 4), tl("", 12), tl("POW", 30)]
     letter(tls, 30)
