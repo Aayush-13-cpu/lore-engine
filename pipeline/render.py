@@ -354,6 +354,56 @@ def motion_keys(s, i, L, lead):
     return PRESETS[m]
 
 
+CLAUSE = re.compile(r"^(and|but|then|when|as|while|until|so|because|who|which|where|before|after|or|now|yet)$", re.I)
+
+
+def cut_times(words, lead, L, lo=1.2, hi=3.5, aim=2.3):
+    """Cut points (s into the clip) for a line held on one picture: in the gaps between words, preferring
+    punctuation and clause words, so every shot lasts lo..hi s like a human edit."""
+    cands = [(lead + (b + a2) / 2, w[-1:] in ",;:.!?-—" or bool(CLAUSE.match(w2.strip(".,;:!?\"'").lower())))
+             for (w, _, b), (w2, a2, _) in zip(words, words[1:])]
+    cuts, start = [], 0.0
+    while L - start > hi:
+        ok = [c for c in cands if lo <= c[0] - start <= hi and L - c[0] >= lo]
+        if not ok:
+            break
+        start = min(ok, key=lambda c: abs(c[0] - start - aim) - 0.6 * c[1])[0]
+        cuts.append(start)
+    return cuts
+
+
+def focus_points(canvas, depth=None):
+    """(subject, mass) focus points in 0..1: the nearest thing from the depth map, else the busiest ink."""
+    if depth is None:
+        g = cv2.cvtColor(cv2.resize(canvas, (256, 144), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        w = cv2.GaussianBlur(np.abs(cv2.Laplacian(g.astype(np.float32), cv2.CV_32F)), (0, 0), 6)
+    else:
+        w = depth ** 3
+    h, wd = w.shape
+    gy, gx = np.mgrid[0:h, 0:wd]
+    top = w >= np.quantile(w, .9)
+
+    def centre(m):
+        m = m.astype(np.float32) + 1e-9
+        return (float(np.clip((gx * m).sum() / m.sum() / wd, .3, .7)), float(np.clip((gy * m).sum() / m.sum() / h, .32, .68)))
+    return centre(w * top), centre(w)
+
+
+def cut_plan(keys, n, cuts, focus):
+    """[(keys, frames, t0)]: shot 1 keeps the scene's own move (the wide); then close on the subject and medium on
+    the whole group alternate, so no two neighbours share a framing. Every shot still drifts a little."""
+    edges = [0] + [round(t * C.fps) for t in cuts] + [n]
+    out = []
+    for j, (a, b) in enumerate(zip(edges, edges[1:])):
+        if j:
+            fx, fy = focus[0] if j % 2 else focus[1]
+            z, d = (1.75, .03) if j % 2 else (1.3, .05)  # >=30% size change between neighbours: no jump cuts
+            d *= 1 if j % 4 < 2 else -1
+            keys = [(0, z, fx - d, fy), (1, z * 1.05, fx + d, fy)]
+        out.append((keys, b - a, a / C.fps))
+    return out
+
+
 def shaker(s, lead, seed):
     hand, impact = s["motion"] == "shake", s["sfx"] == "impact"
     if not (hand or impact):
@@ -520,7 +570,8 @@ def depth_of(canvas):
     return cv2.GaussianBlur(cv2.resize(d, (max(w // 4, 1), max(h // 4, 1))), (0, 0), 2)
 
 
-def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0, depth=None):
+def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0, depth=None, t0=0.0):
+    """t0 = where this shot starts inside its scene: captions, SFX and shake keep scene time across cuts."""
     fps = C.fps
     ch_, cw_ = canvas.shape[:2]
     base = max(W / cw_, H / ch_)
@@ -535,7 +586,7 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
     while mips[-1].shape[1] > 2.2 * W:
         mips.append(cv2.pyrDown(mips[-1]))
     for f in range(n):
-        tau, t = f / fps, f / max(n - 1, 1)
+        tau, t = t0 + f / fps, f / max(n - 1, 1)
         z, fx_, fy_ = interp(keys, t)
         sc = base * z
         vw, vh = W / sc, H / sc
@@ -649,12 +700,18 @@ def render_scene(job):
             shots = [(evidence, dict(tl, F=n1, out=0), n1, lead),
                      (dict(s, sfx=""), dict(tl, Tf=0, F=n - n1, out=0, prev=None), n - n1, 0.0)]
 
+        cut = str(C.S.get("shot_cuts", "auto")).lower() != "off" and len(shots) == 1 and s["template"] == "full" \
+            and s["motion"] not in ("static", "shake")
+
         def shot_frames():
             for s2, tl2, count, ld in shots:
-                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H)
+                canvas, over, keys, reveal = build(s2, tl2, C.W, C.H, 1.4 if cut else 1.0)  # close-ups stay sharp
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
-                yield from frames(canvas, keys, count, C.W, C.H, over, s2, ld, reveal, seed,
-                                  depth_of(canvas) if deep else None)
+                depth = depth_of(canvas) if deep else None
+                cuts = cut_times(tl2["words"], ld, count / C.fps) if cut else []
+                plan = cut_plan(keys, count, cuts, focus_points(canvas, depth)) if cuts else [(keys, count, 0.0)]
+                for k2, c2, t0 in plan:
+                    yield from frames(canvas, k2, c2, C.W, C.H, over, s2, ld, reveal, seed, depth, t0)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
         encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
@@ -935,6 +992,11 @@ def _selfcheck():
     assert abs(got[1] - 300) <= 2, got
     got = to_gutters((560, 730, 1000, 1000), (rn, cn), 1000, 1000)
     assert abs(got[0] - 500) <= 2 and abs(got[1] - 700) <= 2, got  # the strongest peak, not the weak band
+    words = [(w, i * .4, i * .4 + .3) for i, w in enumerate("He came, and the sky burned. Then nothing was left of the world".split())]
+    cuts = cut_times(words, .2, 5.4)  # a 5.4 s line on one picture
+    shots = [b - a for a, b in zip([0] + cuts, cuts + [5.4])]
+    assert cuts and all(1.2 <= d <= 3.5 for d in shots), shots
+    assert len(cut_times(words[:4], .2, 3.0)) == 0  # short lines stay one shot
 
 
 if __name__ == "__main__":
