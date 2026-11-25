@@ -298,7 +298,31 @@ def timeline(P, meta, fps, pad=None):
     for a, b in zip(out, out[1:]):
         a["out"] = b["Tf"]
     out[-1]["out"] = 0
+    if str(P["settings"].get("auto_sfx", "auto")).lower() != "off":
+        letter(out, fps)
     return out
+
+
+IMPACT = {"snap": "SNAP!", "crash": "CRASH!", "slam": "SLAM!", "smash": "SMASH!", "explod": "BOOM!", "shatter": "KRASH!",
+          "punch": "POW!", "roar": "ROAR!"}  # physical sounds only: "Devourer" or "Big Bang" are names, not impacts
+
+
+def letter(tls, fps, gap=10.0):
+    """tl["hit"] = (lettering, s into the clip): the sheet's sfx_text on its own word, else an impact verb in the
+    line (at most one per `gap` s). Lettering, shake and the impact sound all land on that word."""
+    last = -gap
+    for tl in tls:
+        s = tl["s"]
+        if s["template"] != "full" or s.get("page"):  # never letter over a real comic page
+            continue
+        own = re.sub(r"[^a-z]", "", s["sfx_text"].lower())[:3]
+        for w, a, _ in tl["words"]:
+            k = re.sub(r"[^a-z]", "", w.lower())
+            auto = next((v for stem, v in IMPACT.items() if k.startswith(stem)), "")
+            if (own and (k.startswith(own) or auto)) or (not own and auto and tl["voice"] + a - last >= gap):
+                tl["hit"] = (s["sfx_text"] or auto, tl["Tf"] / 2 / fps + a)
+                last = tl["voice"] + a
+                break
 
 
 # ---------------- pictures ----------------
@@ -547,9 +571,10 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     if captions and s["caption"] and tpl not in CARDS | {"split", "issue"}:
         over.append(prep(comic.caption_box(s["caption"], st.get("caption_bg") or "#F6E27A", st.get("caption_fg") or "#111111"),
                          60, 160 if bars(st) else 50, lead + 0.3))  # clear of the letterbox bar
-    if s["sfx_text"]:
-        im = comic.sfx_word(s["sfx_text"].upper(), st.get("sfx_color") or "#FFE14D")
-        over.append(prep(im, W - im.width - 70 if W >= H else (W - im.width) // 2, int(H * .52 - im.height / 2), lead, pop=True))
+    text, at = tl.get("hit") or (s["sfx_text"], lead)
+    if text:
+        im = comic.sfx_word(text.upper(), st.get("sfx_color") or "#FFE14D")
+        over.append(prep(im, W - im.width - 70 if W >= H else (W - im.width) // 2, int(H * .52 - im.height / 2), at, pop=True))
     if keys is None:
         keys = motion_keys(s, tl["i"], L, lead)
     return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR), [o for o in over if o], keys, reveal
@@ -708,8 +733,10 @@ def render_scene(job):
                 canvas, over, keys, reveal = build(s2, tl2, C.W, C.H, 1.4 if cut else 1.0)  # close-ups stay sharp
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
                 depth = depth_of(canvas) if deep else None
-                cuts = cut_times(tl2["words"], ld, count / C.fps) if cut else []
+                cuts = cut_times(tl2["words"], ld, count / C.fps) if cut else []  # ld = voice lead here
                 plan = cut_plan(keys, count, cuts, focus_points(canvas, depth)) if cuts else [(keys, count, 0.0)]
+                if tl2.get("hit"):  # shake (and a sheet flash) on the lettered word, not at the line start
+                    s2, ld = dict(s2, sfx=s2["sfx"] or "impact"), tl2["hit"][1]
                 for k2, c2, t0 in plan:
                     yield from frames(canvas, k2, c2, C.W, C.H, over, s2, ld, reveal, seed, depth, t0)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
@@ -769,7 +796,8 @@ def tracks(tls, audiodir, total, fps):
             i0 = int(tl["voice"] * 24000)
             voice[i0:i0 + len(a)] += a[:len(voice) - i0]
         if s["sfx"]:
-            place(sfx, bank[s["sfx"]], tl["voice"] - (len(bank["riser"]) / SR if s["sfx"] == "riser" else 0))
+            at = tl["start"] / fps + tl["hit"][1] if tl.get("hit") and s["sfx"] == "impact" else tl["voice"]
+            place(sfx, bank[s["sfx"]], at - (len(bank["riser"]) / SR if s["sfx"] == "riser" else 0))
     return voice, sfx
 
 
@@ -997,6 +1025,11 @@ def _selfcheck():
     shots = [b - a for a, b in zip([0] + cuts, cuts + [5.4])]
     assert cuts and all(1.2 <= d <= 3.5 for d in shots), shots
     assert len(cut_times(words[:4], .2, 3.0)) == 0  # short lines stay one shot
+    tl = lambda text, v: dict(s=dict(template="full", sfx_text=text), Tf=6, voice=v, words=[("He", 0, .2), ("snapped", .3, .7)])
+    tls = [tl("", 0), tl("", 4), tl("", 12), tl("POW", 30)]
+    letter(tls, 30)
+    assert tls[0]["hit"] == ("SNAP!", 0.1 + .3) and "hit" not in tls[1] and tls[2]["hit"][0] == "SNAP!", tls  # 1 per 10 s
+    assert tls[3]["hit"] == ("POW", 0.4)  # the sheet's own lettering wins and lands on the impact word
 
 
 if __name__ == "__main__":
