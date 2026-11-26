@@ -19,7 +19,7 @@ PAGE = re.compile(r"^(\S+?)(#\d+|@[\d.]+,[\d.]+,[\d.]+,[\d.]+)?$")  # file-or-ur
 NEEDS_IMAGE = {"full", "panels", "split"}  # other templates use an image only as backdrop
 TRANSITIONS = {"auto", "cut", "fade", "dissolve", "black", "flash", "whip", "glitch", "zoom", "circle", "wipe", "slide", "radial"}
 MOTIONS = {"auto", "in", "out", "left", "right", "up", "down", "static", "shake", "punch"}
-FX = {"", "none", "embers", "dust", "snow", "rain", "stars", "flash", "glitch"}
+FX = {"", "none", "embers", "dust", "snow", "rain", "stars", "flash", "glitch", "rays", "fog", "film", "hud"}
 SFX = {"", "none", "whoosh", "impact", "riser", "rumble", "glitch"}
 GRADE_OK = re.compile(r"^[\w=:.,\-/ ]*$")  # ffmpeg filter args only: no graph syntax like ; [ ]
 DEFAULTS = dict(
@@ -79,8 +79,10 @@ BEATS = {  # what a beat is about -> (words that say so, the shot that tells it)
                 "A quiet high-angle wide shot, the figure small and alone"),
     "threat": ("kill killed destroy destroyed devour devoured conquer war army fear rage slaughter terror enemy attack "
                "crush crushed dominate threat", "A low-angle shot looking up, dominant and menacing"),
-    "artifact": ("gauntlet glove gem gems stone stones hammer sword ring book armor helmet machine throne device crown orb "
-                 "cube", "A detail insert shot of the object"),
+    "artifact": ("gauntlet glove gem gems stone stones hammer sword ring book armor helmet throne crown orb cube",
+                 "A detail insert shot of the object"),
+    "tech": ("lab laboratory machine machines computer scan scanner signal data experiment experiments scientist "
+             "science device technology", "A close shot lit by screens and machinery"),
     "cosmic": ("universe universes galaxy galaxies star stars planet planets cosmos cosmic void space sun suns existence "
                "eternity dimension", "An extreme wide shot showing the immense cosmic scale"),
     "power": ("power powers energy strength ability abilities force blast transformed transform unleashed",

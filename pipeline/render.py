@@ -42,6 +42,13 @@ INTENT = {"threat": "in", "revelation": "in", "artifact": "in", "power": "in", "
           "multiverse": "left", "origin": "up", "history": "right", "tech": "in"}  # beat -> the move that means it
 FLIP = {"in": "out", "out": "in", "left": "right", "right": "left", "up": "down", "down": "up"}
 FOCUS = {"artifact", "revelation", "tragedy"}  # beats that get a rack focus onto the subject
+AUTO_FX = {"cosmic": "stars", "multiverse": "stars", "threat": "embers", "tragedy": "fog", "power": "rays",
+           "revelation": "rays", "history": "film", "tech": "hud", "origin": "dust"}  # beat -> its one effect
+MOOD = {  # beat -> (B, G, R gain, saturation, black lift): gentle, on top of the style's grade
+    "cosmic": ((1.06, 1.0, .95), 1.05, 0), "multiverse": ((1.06, 1.0, .95), 1.05, 0),
+    "threat": ((.95, .97, 1.07), 1.0, 0), "tragedy": ((1.03, 1.0, .98), .72, 5), "origin": ((.94, 1.0, 1.06), 1.0, 4),
+    "history": ((.86, .97, 1.06), .7, 6), "tech": ((1.05, 1.04, .94), .95, 0), "power": ((1.0, 1.0, 1.0), 1.1, 0),
+}
 PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y): slow and small, like a rostrum camera
     "in": [(0, 1.0, .5, .5), (1, 1.06, .5, .48)], "out": [(0, 1.06, .5, .48), (1, 1.0, .5, .5)],
     "left": [(0, 1.06, .54, .5), (1, 1.06, .46, .5)], "right": [(0, 1.06, .46, .5), (1, 1.06, .54, .5)],
@@ -306,7 +313,25 @@ def timeline(P, meta, fps, pad=None):
         letter(out, fps)
     if str(P["settings"].get("auto_text", "auto")).lower() != "off":
         texts(out, P, fps, float(P["settings"].get("text_gap", 15)))
+    mood(out, P["settings"])
     return out
+
+
+def mood(tls, S):
+    """Each AI line's main beat sets its grade (s["mood"]) and, at most every fx_gap s, its one effect, unless the
+    sheet chose an effect itself."""
+    last = -1e9
+    for tl in tls:
+        s = tl["s"]
+        beats = [b for b in s.get("beats") or [] if b]
+        if s["template"] != "full" or s.get("page") or s["broll"] or not beats:
+            continue
+        beat = max(beats, key=beats.count)
+        s = dict(s, mood=beat if str(S.get("mood_grade", "auto")).lower() != "off" else "")
+        if not s["fx"] and AUTO_FX.get(beat) and str(S.get("auto_fx", "auto")).lower() != "off" \
+                and tl["voice"] - last >= float(S.get("fx_gap", 12)):
+            s["fx"], last = AUTO_FX[beat], tl["voice"]
+        tl["s"] = s
 
 
 IMPACT = {"snap": "SNAP!", "crash": "CRASH!", "slam": "SLAM!", "smash": "SMASH!", "explod": "BOOM!", "shatter": "KRASH!",
@@ -534,6 +559,66 @@ def particles(kind, W, H, seed):
     return draw
 
 
+def ambient(kind, W, H, seed):
+    """Procedural effect layers, drawn on the picture under the text: light rays, drifting fog, old film, HUD scan."""
+    rng = np.random.default_rng(seed)
+    h4, w4 = max(H // 4, 1), max(W // 4, 1)
+    if kind == "rays":
+        yy, xx = np.mgrid[0:h4, 0:w4].astype(np.float32)
+        sx, sy = w4 * rng.uniform(.25, .75), -h4 * .3
+        ang, fall = np.arctan2(yy - sy, xx - sx), np.exp(-np.hypot(xx - sx, yy - sy) / h4 * .9)
+
+        def draw(frame, tau):
+            m = (.5 + .5 * np.sin(ang * 23 + tau * .35)) ** 6 * (.5 + .5 * np.sin(ang * 9 - tau * .2)) * fall * 120
+            m = cv2.resize(m, (W, H))
+            cv2.add(frame, np.dstack([m * .75, m * .9, m]).astype(np.uint8), dst=frame)  # warm, additive
+    elif kind == "fog":
+        a, b = (cv2.normalize(cv2.GaussianBlur(rng.random((h4, w4 * 2)).astype(np.float32), (0, 0), s), None, 0, 1,
+                              cv2.NORM_MINMAX) for s in (18, 30))
+
+        def draw(frame, tau):
+            m = (np.roll(a, -int(tau * 6), 1)[:, :w4] * .6 + np.roll(b, int(tau * 3), 1)[:, :w4] * .4) ** 2 * .35
+            m = cv2.resize(m, (W, H))[..., None]
+            frame[:] = (frame * (1 - m) + np.float32([150, 150, 155]) * m).astype(np.uint8)
+    elif kind == "film":
+        def draw(frame, tau):
+            r = np.random.default_rng(seed + int(tau * 24))  # changes 24 times a second, like a projector
+            cv2.convertScaleAbs(frame, frame, 1 + r.uniform(-.03, .03))
+            for _ in range(int(r.integers(0, 3))):
+                x = int(r.integers(0, W))
+                cv2.line(frame, (x, 0), (x + int(r.integers(-20, 20)), H), (205, 205, 205), 1, cv2.LINE_AA)
+            for _ in range(int(r.integers(0, 6))):
+                cv2.circle(frame, (int(r.integers(0, W)), int(r.integers(0, H))), int(r.integers(1, 4)), (25, 25, 25), -1)
+    else:  # hud
+        def draw(frame, tau):
+            layer = np.zeros_like(frame)
+            y = int(tau * .25 % 1 * H)
+            cv2.rectangle(layer, (0, y), (W, y + 3), (120, 110, 0), -1)
+            layer[::4] += 5
+            mx, my, k = round(W * .05), round(H * .05), 60
+            for cx, cy, dx, dy in ((mx, my, 1, 1), (W - mx, my, -1, 1), (mx, H - my, 1, -1), (W - mx, H - my, -1, -1)):
+                cv2.line(layer, (cx, cy), (cx + dx * k, cy), (140, 130, 0), 2)
+                cv2.line(layer, (cx, cy), (cx, cy + dy * k), (140, 130, 0), 2)
+            cv2.add(frame, layer, dst=frame)
+    return draw
+
+
+def grader(beat):
+    """The beat's gentle grade as a function on BGR frames, or None."""
+    if beat not in MOOD:
+        return None
+    gains, sat, lift = MOOD[beat]
+    x = np.arange(256, dtype=np.float32)
+    lut = np.stack([np.clip(lift + x * g * (255 - lift) / 255, 0, 255) for g in gains], 1).astype(np.uint8)[:, None]
+
+    def f(frame):
+        out = cv2.LUT(frame, lut)
+        if sat != 1:
+            out = cv2.addWeighted(out, sat, cv2.cvtColor(cv2.cvtColor(out, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR), 1 - sat, 0)
+        return out
+    return f
+
+
 def glitch(frame, rng):
     sh = int(rng.integers(8, 22))
     frame[:, :, 2] = np.roll(frame[:, :, 2], sh, axis=1)
@@ -731,7 +816,9 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
         gy, gx = np.mgrid[0:H, 0:W].astype(np.float32)
         amp = float(C.S.get("parallax", 14)) * (-1 if interp(keys, 1)[1] > interp(keys, 0)[1] else 1)
     fx = s["fx"] if s else ""
-    parts = particles(fx, W, H, seed) if fx in ("embers", "dust", "snow", "rain", "stars") else None
+    parts = particles(fx, W, H, seed) if fx in ("embers", "dust", "snow", "rain", "stars") else \
+        ambient(fx, W, H, seed) if fx in ("rays", "fog", "film", "hud") else None
+    grade = grader(s.get("mood")) if s else None
     shake = shaker(s, lead, seed) if s else None
     rng = np.random.default_rng(seed)
     mips = [canvas]  # half-size copies: big zoom-outs (whole comic pages) sample these instead of shimmering
@@ -761,9 +848,14 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
                 f0 = -0.2 + 0.55 * min(t / 0.4, 1.0) ** 2 * (3 - 2 * min(t / 0.4, 1.0))  # eased: far -> subject
                 m = np.clip((np.abs(near - f0) - 0.12) * 2.5, 0, 0.8)[..., None]
                 frame = (frame * (1 - m) + cv2.GaussianBlur(frame, (0, 0), 5) * m).astype(np.uint8)
+        if grade:  # the picture only: text and lettering keep their colours
+            frame = grade(frame)
+        under = fx in ("rays", "fog", "film", "hud")
+        if parts and under:
+            parts(frame, tau)
         for ov in overlays:
             blend(frame, ov, tau)
-        if parts:
+        if parts and not under:
             parts(frame, tau)
         if fx == "flash" and lead <= tau < lead + 0.3:
             a = 1 - (tau - lead) / 0.3
@@ -1193,6 +1285,17 @@ def _selfcheck():
     texts(tls, P, 30)
     assert tls[1]["texts"][0][:3] == ("versus", "Mistress Death|Thanos", "9|10"), tls[1]
     assert tls[2]["texts"][0][:2] == ("year", "1991") and level({"threat_level": "x"}) == 0
+    S = dict(fx_gap=12)
+    sc = lambda beats, fx="": dict(template="full", page="", broll="", fx=fx, beats=beats)
+    tls = [dict(s=sc(["", "cosmic", "cosmic"]), voice=0), dict(s=sc(["threat"]), voice=5),
+           dict(s=sc(["tragedy"], "snow"), voice=20), dict(s=sc([""]), voice=40)]
+    mood(tls, S)
+    assert [tl["s"]["fx"] for tl in tls] == ["stars", "", "snow", ""] and tls[1]["s"]["mood"] == "threat"  # 12 s apart
+    fr = np.full((8, 8, 3), 128, np.uint8)
+    assert grader("tragedy")(fr).std() < 3 and grader("") is None
+    for k in ("rays", "fog", "film", "hud"):
+        g = np.full((72, 128, 3), 60, np.uint8)
+        ambient(k, 128, 72, 1)(g, 1.0)  # draws in place without errors
     tl = lambda text, v: dict(s=dict(template="full", sfx_text=text), Tf=6, voice=v, words=[("He", 0, .2), ("snapped", .3, .7)])
     tls = [tl("", 0), tl("", 4), tl("", 12), tl("POW", 30)]
     letter(tls, 30)
