@@ -72,11 +72,40 @@ SHOTS = ["A tight close-up", "A wide establishing shot", "A low-angle hero shot"
 CLAUSE = re.compile(r"^(and|but|then|when|as|while|until|so|because|who|which|where|before|after|or|now|yet)$", re.I)
 
 
-def split_words(words, m):
-    """Word indexes where pictures 2..m of a line start: near equal shares, on punctuation or a clause word,
-    every piece at least 4 words."""
-    cands = [(i, words[i - 1][-1:] in ",;:.!?—-" or bool(CLAUSE.match(words[i].strip(".,;:!?\"'").lower())))
-             for i in range(4, len(words) - 3)]
+BEATS = {  # what a beat is about -> (words that say so, the shot that tells it); earlier wins a tie
+    "revelation": ("truth secret secrets revealed reveal discovered realized learned hidden betrayed lie lies",
+                   "A backlit silhouette reveal shot"),
+    "tragedy": ("died death dead dying lost alone grief mourned tears sacrifice sacrificed gone buried wept empty mourn",
+                "A quiet high-angle wide shot, the figure small and alone"),
+    "threat": ("kill killed destroy destroyed devour devoured conquer war army fear rage slaughter terror enemy attack "
+               "crush crushed dominate threat", "A low-angle shot looking up, dominant and menacing"),
+    "artifact": ("gauntlet glove gem gems stone stones hammer sword ring book armor helmet machine throne device crown orb "
+                 "cube", "A detail insert shot of the object"),
+    "cosmic": ("universe universes galaxy galaxies star stars planet planets cosmos cosmic void space sun suns existence "
+               "eternity dimension", "An extreme wide shot showing the immense cosmic scale"),
+    "power": ("power powers energy strength ability abilities force blast transformed transform unleashed",
+              "A dynamic action shot of the power in use"),
+    "origin": ("born child childhood young boy girl family father mother home began", "A warm establishing shot of the place and time"),
+    "multiverse": ("multiverse timeline timelines parallel alternate realities", "A wide shot of branching parallel worlds"),
+    "history": ("comic comics issue issues published readers writer artist kirby starlin", "An archival-style establishing shot"),
+}
+
+
+def classify(text, names=frozenset()):
+    """The beat a piece of narration is about ("" = plain storytelling): it picks the shot, camera, grade, effect, sound.
+    names: character names, which never count ("she was Death" is about a character, not a tragedy)."""
+    ws = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in str(text).split() if re.sub(r"[^A-Za-z]", "", w) not in names]
+    score = {b: sum(w in kw.split() for w in ws) + (b == "history") * sum(bool(re.fullmatch(r"(19|20)\d\d", w)) for w in ws)
+             for b, (kw, _) in BEATS.items()}
+    best = max(score, key=lambda b: score[b])  # max keeps the first of equal scores: dict order is the priority
+    return best if score[best] else ""
+
+
+def split_words(words, m, names=frozenset()):
+    """Word indexes where pictures 2..m of a line start: near equal shares, preferring a change of subject (a character
+    name), punctuation or a clause word; every piece at least 4 words."""
+    cands = [(i, words[i - 1][-1:] in ",;:.!?—-" or bool(CLAUSE.match(words[i].strip(".,;:!?\"'").lower()))
+              or re.sub(r"[^A-Za-z]", "", words[i]) in names) for i in range(4, len(words) - 3)]
     cuts = []
     for k in range(1, m):
         ok = [c for c in cands if c[0] >= (cuts[-1] + 4 if cuts else 4)]
@@ -230,6 +259,8 @@ def build(vid, subset="", path=SHEET):
     jobs = {j["name"]: j for j in images}
     # subscenes: a long AI line gets 2-4 new pictures, one per part of the sentence, cut on the word it starts on.
     # Each costs ~36 min of runner time, so image_budget caps them and the longest lines get theirs first.
+    names = {re.sub(r"[^A-Za-z]", "", x) for ch in chars.values() for x in str(ch.get("name", "")).split()
+             if x[:1].isupper() and len(x) > 2}
     if str(S.get("shot_cuts", "auto")).lower() != "off":
         lines = [s for s in scenes if s["template"] == "full" and not s.get("page") and len(s["images"]) == 1
                  and s["images"][0] in jobs]
@@ -242,19 +273,28 @@ def build(vid, subset="", path=SHEET):
                     give[s["n"]], spare = r, spare - 1
         for s in lines:
             words, j = s["narration"].split(), jobs[s["images"][0]]
-            at = split_words(words, give[s["n"]])
+            at = split_words(words, give[s["n"]], names)
+            s["beats"] = [classify(" ".join(words[:at[0] if at else len(words)]), names)]
+            shot = ""
             for k, (a, b) in enumerate(zip(at, at[1:] + [len(words)]), 1):
                 part = words[a:b][1:] if CLAUSE.match(words[a].strip(".,;:!?\"'")) else words[a:b]
                 part = " ".join(part).strip(" ,;:—-").rstrip(".!?")
                 named = [c for c, ch in chars.items() if name_re(ch) and name_re(ch).search(part)]
                 cast = (named or j["cast"])[:2]  # "he" in this part is still the line's character
-                v = f"{SHOTS[(s['n'] + k) % len(SHOTS)]}: {part}. Same scene, setting and colours as: {j['visual']}"
+                beat = classify(part, names)
+                # the shot that tells this beat; a plain beat (or a repeat of the last shot) takes the next in rotation
+                shot = BEATS[beat][1] if beat and BEATS[beat][1] != shot else \
+                    next(x for i in range(len(SHOTS)) for x in [SHOTS[(s["n"] + k + i) % len(SHOTS)]] if x != shot)
+                s["beats"].append(beat)
+                v = f"{shot}: {part}. Same scene, setting and colours as: {j['visual']}"
                 images.append(dict(name=f"s{s['n']:03d}_{k}.png", prompt=scene_prompt(style, v, [chars[c] for c in cast]),
                                    seed=seed(vid, v), refs=[f"ref_{c}.png" for c in cast], visual=v, cast=cast))
                 s["images"].append(f"s{s['n']:03d}_{k}.png")
                 cast_ids += cast
             s["splits"] = at[:len(s["images"]) - 1]
         jobs = {j["name"]: j for j in images}
+    for s in scenes:  # every other row: one beat for its whole line
+        s.setdefault("beats", [classify(s["narration"], names)] * max(1, len(s["images"])))
     # green screen: a character named in a line whose pictures don't show them slides in on their name,
     # at most once every callout_gap seconds of narration
     cut_ids, t, last = [], 0.0, -1e9
@@ -313,5 +353,13 @@ def build(vid, subset="", path=SHEET):
     )
 
 
+def _selfcheck():
+    assert classify("Every star. Every planet.") == "cosmic" and classify("He walked on.") == ""
+    assert classify("And she was Death.", {"Death"}) == "" and classify("Everyone he loved died, alone.") == "tragedy"
+    w = "He beat a living gardener, then Thanos took the last gem".split()
+    assert split_words(w, 2, {"Thanos"}) == [5]  # the cut lands on the new subject's name
+
+
 if __name__ == "__main__":
+    _selfcheck()
     print(json.dumps(build(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ""), indent=1, default=str))
