@@ -12,6 +12,7 @@ Then ./lore.sh flow uploads the folder as release 'flow-<VID>', and the render u
 Selectors checked live on 2026-11-24; if Flow changes its page, fix them in main()/attach()/results().
 """
 import base64
+import hashlib
 import io
 import json
 import os
@@ -62,6 +63,17 @@ def trim_frame(im):
     if not (top or bottom or left or right):
         return im
     return im.crop((left, top, w - right, h - bottom)).resize((w, h), Image.LANCZOS)
+
+
+def fingerprint(j):
+    """The shot a Flow picture was drawn for (pipeline/images.py flow_ok checks the same): a rewritten shot is redrawn."""
+    return hashlib.sha1(str(j.get("visual") or j.get("prompt") or "").encode()).hexdigest()[:16]
+
+
+def current(out, j):
+    """A saved Flow picture still fits its shot; pictures from before fingerprints (no .prompt file) count as fitting."""
+    png, fp = os.path.join(out, j["name"]), os.path.join(out, j["name"][:-4] + ".prompt")
+    return os.path.exists(png) and (not os.path.exists(fp) or open(fp).read().strip() == fingerprint(j))
 
 
 def save(page, src, path):
@@ -212,7 +224,7 @@ def main(plan_path, out):
     no_flow, giveaway = flux_only(P)
     jobs, flux = [], []
     for j in P["refs"] + P["images"]:  # refs first: every later scene is drawn against them
-        if j.get("src") or j.get("crop") or os.path.exists(os.path.join(out, j["name"])):
+        if j.get("src") or j.get("crop") or current(out, j):
             continue
         words = set(re.findall(r"[a-z]+", str(j.get("visual") or "").lower()))
         if j.get("cutout") or j.get("char") in no_flow or set(j.get("cast", [])) & no_flow or words & giveaway:
@@ -282,6 +294,7 @@ def main(plan_path, out):
                     continue
                 dst = os.path.join(out, j["name"])
                 save(page, got[tag(j)], dst)
+                open(dst[:-4] + ".prompt", "w").write(fingerprint(j))
                 w, h = Image.open(dst).size
                 print(f"[{done}/{len(jobs)}] {j['name']} saved {w}x{h} (batch {bi}/{len(batches)}, "
                       f"{time.time() - t0:.0f}s)" + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95

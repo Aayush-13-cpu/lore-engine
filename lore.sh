@@ -80,7 +80,7 @@ flow() { # videos whose comics we cannot use (Marvel, DC, ...): draw the images 
     "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"
   gh release view "flow-$1" >/dev/null 2>&1 ||
     gh release create "flow-$1" --prerelease --title "Flow images for $1" --notes "Google Flow images used by renders of $1"
-  gh release upload "flow-$1" "out/$1"/flow/*.png --clobber
+  gh release upload "flow-$1" "out/$1"/flow/*.png $(ls "out/$1"/flow/*.prompt 2>/dev/null) --clobber  # .prompt: which shot each is
   echo "Flow images published. Now render with: ./lore.sh render $1"
 }
 

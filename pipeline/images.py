@@ -74,6 +74,14 @@ def my_jobs(jobs, shard, n):
     return mine
 
 
+def flow_ok(path, j):
+    """Use a Flow picture only for the shot it was drawn for (its .prompt fingerprint, see flow/flow_images.py);
+    pictures from before fingerprints have none and are used as before."""
+    fp = path[:-4] + ".prompt"
+    want = hashlib.sha1(str(j.get("visual") or j.get("prompt") or "").encode()).hexdigest()[:16]
+    return not os.path.exists(fp) or open(fp).read().strip() == want
+
+
 def keyfile(path):
     return path[:-4] + ".key"
 
@@ -155,7 +163,7 @@ def main(plan_path, phase, shard, nshards, out):
         flow = os.path.join(os.environ.get("FLOW_DIR", "work/flow"), j["name"])
         if j.get("asset") and os.path.exists(j["asset"]):
             shutil.copy(j["asset"], dst)  # approved reference image wins over generation
-        elif os.path.exists(flow):  # drawn in Google Flow on your machine (non-public-domain videos): used as-is
+        elif os.path.exists(flow) and flow_ok(flow, j):  # drawn in Google Flow on your machine (non-public-domain videos): used as-is
             shutil.copy(flow, dst)
         elif j.get("crop"):  # reference cut from a real comic panel: on-model, nothing generated
             from PIL import Image
