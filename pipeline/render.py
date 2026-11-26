@@ -36,7 +36,7 @@ DEPTH = None  # per-process ONNX session, loaded on first use
 PARALLAX = {"full", "page", "issue"}  # templates whose picture gets depth layers (gs:* too)
 PAUSE = {"?": 1.5, "!": 1.4, ".": 1.2, ";": 0.8, ":": 0.8, ",": 0.45}  # breath after a line, by how it ends
 assert set(XFADE) | {"auto"} == TRANSITIONS
-AUTO_T = ["cut", "fade", "cut", "dissolve"]  # cuts and soft fades only: whips and zooms every scene read amateur
+AUTO_T = ["cut", "cut", "fade", "cut", "cut", "dissolve"]  # cuts and soft fades only: whips and zooms every scene read amateur
 AUTO_M = ["in", "right", "out", "left", "in", "up", "out", "down"]
 INTENT = {"threat": "in", "revelation": "in", "artifact": "in", "power": "in", "tragedy": "out", "cosmic": "right",
           "multiverse": "left", "origin": "up", "history": "right", "tech": "in"}  # beat -> the move that means it
@@ -324,12 +324,16 @@ def mood(tls, S):
     for tl in tls:
         s = tl["s"]
         beats = [b for b in s.get("beats") or [] if b]
-        if s["template"] != "full" or s.get("page") or s["broll"] or not beats:
+        if s["template"] != "full" or s.get("page") or s["broll"]:
+            continue
+        if s["fx"]:  # the sheet's own effect counts toward the spacing too
+            last = tl["voice"]
+        if not beats:
             continue
         beat = max(beats, key=beats.count)
         s = dict(s, beat=beat, mood=beat if str(S.get("mood_grade", "auto")).lower() != "off" else "")
         if not s["fx"] and AUTO_FX.get(beat) and str(S.get("auto_fx", "auto")).lower() != "off" \
-                and tl["voice"] - last >= float(S.get("fx_gap", 12)):
+                and tl["voice"] - last >= float(S.get("fx_gap", 20)):
             s["fx"], last = AUTO_FX[beat], tl["voice"]
         tl["s"] = s
 
@@ -1331,12 +1335,15 @@ def _selfcheck():
     texts(tls, P, 30)
     assert tls[1]["texts"][0][:3] == ("versus", "Mistress Death|Thanos", "9|10"), tls[1]
     assert tls[2]["texts"][0][:2] == ("year", "1991") and level({"threat_level": "x"}) == 0
-    S = dict(fx_gap=12)
+    S = dict(fx_gap=12)  # the test pins its own gap
     sc = lambda beats, fx="": dict(template="full", page="", broll="", fx=fx, beats=beats)
     tls = [dict(s=sc(["", "cosmic", "cosmic"]), voice=0), dict(s=sc(["threat"]), voice=5),
            dict(s=sc(["tragedy"], "snow"), voice=20), dict(s=sc([""]), voice=40)]
     mood(tls, S)
     assert [tl["s"]["fx"] for tl in tls] == ["stars", "", "snow", ""] and tls[1]["s"]["mood"] == "threat"  # 12 s apart
+    tls = [dict(s=sc([""], "flash"), voice=0), dict(s=sc(["cosmic"]), voice=5), dict(s=sc(["cosmic"]), voice=13)]
+    mood(tls, S)
+    assert [tl["s"]["fx"] for tl in tls] == ["flash", "", "stars"]  # spaced from the sheet's own flash
     fr = np.full((8, 8, 3), 128, np.uint8)
     assert grader("tragedy")(fr).std() < 3 and grader("") is None
     for k in ("drone", "rumble", "wind", "hum"):

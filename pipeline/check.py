@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 
 import cv2
 
@@ -24,6 +25,16 @@ def shots(tls, fps):
             edges = [0.0] + R.scene_cuts(tl) + [tl["F"] / fps]
             out += [(tl["s"]["n"], b - a) for a, b in zip(edges, edges[1:]) if b > a]
     return out
+
+
+def pacing(tls, fps):
+    """Editing numbers: unique AI pictures, hard-cut share of all cuts, back-to-back identical camera moves."""
+    ai = [tl for tl in tls if tl["s"]["template"] == "full" and not tl["s"].get("page") and not tl["s"]["broll"]]
+    pics = {i for tl in ai for i in tl["s"]["images"]}
+    sub = sum(len(R.scene_cuts(tl)) for tl in tls)  # cuts between a line's own pictures are always hard cuts
+    hard = sum(tl["tr"] == "cut" for tl in tls[1:]) + sub
+    seq = [m for tl in ai for m in R.moves(tl)]
+    return dict(pics=len(pics), hard=hard / max(len(tls) - 1 + sub, 1), repeats=sum(a == b for a, b in zip(seq, seq[1:])))
 
 
 def dhash(path):
@@ -62,7 +73,7 @@ def probe(video):
                 frozen=[float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", log)])
 
 
-def verdict(S, sh, m, stars=()):
+def verdict(S, sh, m, stars=(), pace=None):
     """(hard failures, warnings) from the measurements. stars: (start, end) of starfield b-roll, dark on purpose."""
     hard, warn = [], []
     m = dict(m, black=[(a, b) for a, b in m["black"] if not any(x <= a and b <= y for x, y in stars)])
@@ -80,6 +91,14 @@ def verdict(S, sh, m, stars=()):
                     + ", ".join(f"scene {n} {d:.1f}s" for n, d in long_[:8]))
     if m["frozen"]:
         warn.append(f"{len(m['frozen'])} frozen stretch(es) over 6 s")
+    if pace:
+        per_min = pace["pics"] / max(m["v"] / 60, 1e-9)
+        if per_min < 8:
+            warn.append(f"{per_min:.1f} AI pictures per minute (aim 10-14): raise image_budget or lower shot_seconds")
+        if pace["hard"] < .7:
+            warn.append(f"only {pace['hard']:.0%} hard cuts (aim 70-85%): set more transitions to cut")
+        if pace["repeats"] > 3:
+            warn.append(f"{pace['repeats']} back-to-back identical camera moves")
     return hard, warn
 
 
@@ -91,13 +110,15 @@ def main(plan_path, imgdir, audiodir, outdir):
     sh = shots(tls, fps)
     m = probe(os.path.join(outdir, "video.mp4"))
     stars = [(tl["start"] / fps - .5, (tl["start"] + tl["F"] + tl["out"]) / fps + .5) for tl in tls if tl["s"]["broll"] == "stars"]
-    hard, warn = verdict(P["settings"], sh, m, stars)
+    pace = pacing(tls, fps)
+    hard, warn = verdict(P["settings"], sh, m, stars, pace)
     blurry, dups = images(imgdir)
     warn += [f"blurry AI image(s): {', '.join(blurry)}"] if blurry else []
     warn += [f"near-identical AI images: {', '.join(f'{a}={b}' for a, b in dups)}"] if dups else []
     avg = sum(d for _, d in sh) / max(len(sh), 1)
     hits = [f"scene {tl['s']['n']} {tl['hit'][0]}" for tl in tls if tl.get("hit")]
     calls = [f"scene {tl['s']['n']} {tl['s']['callout']}" for tl in tls if tl["s"].get("callout")]
+    fxs = [f"scene {tl['s']['n']} {tl['s']['fx']}" for tl in tls if tl["s"]["fx"]]
     said = [f"scene {tl['s']['n']} {kind} {text}" for tl in tls for kind, text, *_ in tl.get("texts", [])]
     lost = sorted({tl["s"]["callout"] for tl in tls if tl["s"].get("callout")
                    and not os.path.exists(os.path.join(imgdir, f"cut_{tl['s']['callout']}.png"))})
@@ -113,6 +134,12 @@ def main(plan_path, imgdir, audiodir, outdir):
              f"| Subscenes (lines with 2+ pictures) | {sum(len(tl['s']['images']) > 1 for tl in tls if tl['s']['template'] == 'full')} |",
              f"| Green-screen callouts | {', '.join(calls) or 'none'} |",
              f"| Text on screen | {', '.join(said) or 'none'} |",
+             f"| Pictures / shots per minute | {pace['pics'] / (m['v'] / 60):.1f} unique AI pictures, "
+             f"{len(sh) / (m['v'] / 60):.1f} AI shots (aim 10-14 / 18-24) |",
+             f"| Hard cuts | {pace['hard']:.0%} of all cuts (aim 70-85%), {pace['repeats']} repeated camera moves |",
+             f"| Beats | {', '.join(f'{b} {n}' for b, n in Counter(b or 'plain' for tl in tls for b in tl['s'].get('beats', [])).most_common())} |",
+             f"| Effects, ambience, risers | {', '.join(fxs) or 'none'}; "
+             f"{sum(bool(R.AMBIENCE.get(tl['s'].get('beat'))) for tl in tls)} beds, {len(R.reveals(tls))} risers |",
              f"| Black over 1 s | {len(m['black'])} |", f"| Frozen over 6 s | {len(m['frozen'])} |", ""]
     lines += ["## Failures", *[f"- {x}" for x in hard], ""] if hard else []
     lines += ["## Warnings", *[f"- {x}" for x in warn], ""] if warn else []
@@ -128,6 +155,8 @@ def _selfcheck():
     hard, warn = verdict(S, [(1, 6.2)], dict(ok, lufs=-16.5, a=58.0, black=[(3.0, 4.5)]))
     assert len(hard) == 3 and "scene 1 6.2s" in warn[0], (hard, warn)
     assert verdict(S, [], dict(ok, black=[(132.3, 143.0)]), [(131.2, 144.3)]) == ([], [])  # warp starfield is not a hole
+    _, warn = verdict(S, [], ok, (), dict(pics=4, hard=.5, repeats=5))
+    assert len(warn) == 3 and "per minute" in warn[0], warn  # 4 pictures in a minute, half fades, 5 repeats
 
 
 if __name__ == "__main__":
