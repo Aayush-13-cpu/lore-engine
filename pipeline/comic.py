@@ -128,6 +128,59 @@ def punch_text(text, color="#FFFFFF", size=130, maxw=1700):
     return im
 
 
+def threat_bar(level, accent="#E62429"):
+    """'THREAT LEVEL' + 10 cells as [frame, cell 1, ..., cell N] on one canvas size, so the bar can fill cell by cell."""
+    f, w, h = font("bold", 30), 10 * 34 + 190, 44
+
+    def blank():
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    base = blank()
+    d = ImageDraw.Draw(base)
+    d.rectangle([0, 0, w - 1, h - 1], fill=INK + (210,))
+    d.text((12, 2), "THREAT LEVEL", font=f, fill=(255, 255, 255))
+    for i in range(10):
+        d.rectangle([180 + i * 34, 10, 208 + i * 34, h - 10], outline=(255, 255, 255, 150), width=2)
+    cells = []
+    for i in range(int(level)):
+        cells.append(blank())
+        ImageDraw.Draw(cells[-1]).rectangle([183 + i * 34, 13, 205 + i * 34, h - 13], fill=rgb(accent) + (255,))
+    return [base] + cells
+
+
+def versus(a, b, la, lb, accent="#E62429"):
+    """Two characters measured against each other: names, threat bars, VS."""
+    f1, f2 = font("title", 64), font("title", 96)
+    a, b = (re.sub(r"^THE ", "", x.upper()) for x in (a, b))
+    ca, cb = max(int(f1.getlength(a)), 360), max(int(f1.getlength(b)), 360)
+    w, h = ca + cb + 220, 170
+    im = Image.new("RGBA", (w + 10, h + 10), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rectangle([10, 10, w + 9, h + 9], fill=(0, 0, 0, 150))
+    d.rectangle([0, 0, w, h], fill=INK + (235,), outline=rgb(accent), width=3)
+    for x, name, lv in ((30, a, la), (w - 30 - cb, b, lb)):
+        d.text((x, 10), name, font=f1, fill=(255, 255, 255))
+        for i in range(10):
+            d.rectangle([x + i * 34, 110, x + 28 + i * 34, 140], fill=rgb(accent) + (255,) if i < int(lv) else None,
+                        outline=(255, 255, 255, 150), width=2)
+    d.text(((w - f2.getlength("VS")) / 2, 28), "VS", font=f2, fill=rgb("#FFE14D"), stroke_width=5, stroke_fill=INK)
+    return im
+
+
+def year_tag(year, accent="#E62429"):
+    """A year from the narration on a small timeline: the line, ticks, a marker and the year above it."""
+    f = font("title", 72)
+    w, h = int(f.getlength(year)) + 200, 140
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([0, 0, w - 1, h - 1], 14, fill=INK + (190,))
+    d.line([(20, 108), (w - 20, 108)], fill=(255, 255, 255, 210), width=4)
+    for x in range(20, w - 19, 30):
+        d.line([(x, 100), (x, 116)], fill=(255, 255, 255, 150), width=2)
+    d.ellipse([w // 2 - 11, 97, w // 2 + 11, 119], fill=rgb(accent) + (255,), outline=(255, 255, 255), width=3)
+    d.text(((w - f.getlength(year)) / 2, 6), year, font=f, fill=(255, 255, 255))
+    return im
+
+
 def watermark(text):
     f = font("bold", 34)
     im = Image.new("RGBA", (int(f.getlength(text)) + 8, 52), (0, 0, 0, 0))

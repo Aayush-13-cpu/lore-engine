@@ -341,14 +341,23 @@ def name_at(words, name):
     return next((i for i, w in enumerate(words) if re.sub(r"[^A-Za-z]", "", w[0]) in parts), None)
 
 
+def level(ch):
+    """A character's threat_level 1-10 from the sheet, 0 = none given."""
+    try:
+        return min(max(int(float(ch.get("threat_level") or 0)), 0), 10)
+    except (TypeError, ValueError):
+        return 0
+
+
 def texts(tls, P, fps, gap=15.0):
     """tl["texts"] = [(kind, text, sub, in, out)] in s into the clip: a name plate on a character's first mention in the
     video, else the narration's own short punch sentences ("Time. Space. Reality.") in big type; one beat per gap s."""
-    seen, last = set(), -gap
+    seen, met, pairs, last = set(), set(), set(), -gap
     for tl in tls:
         s, w = tl["s"], tl["words"]
         if s["template"] != "full" or s.get("page") or s["broll"] or not w:
             continue
+        named = sorted((k, c) for c, ch in P["characters"].items() for k in [name_at(w, ch.get("name", ""))] if k is not None)
         lead, L, out = tl["Tf"] / 2 / fps, (tl["F"] + tl["out"]) / fps, []
         for c, ch in P["characters"].items():
             k = name_at(w, ch.get("name", ""))
@@ -360,6 +369,20 @@ def texts(tls, P, fps, gap=15.0):
                 out.append(("name", str(ch["name"]).strip(), sub, lead + w[k][1], min(lead + w[k][1] + 3.5, L)))
                 last = tl["voice"] + w[k][1]
                 seen.add(c)
+        both = [(k, c) for k, c in named if c in met and level(P["characters"][c])]
+        if not out and len(both) >= 2 and (both[0][1], both[1][1]) not in pairs \
+                and tl["voice"] + w[both[1][0]][1] - last >= gap:  # two known characters measured against each other
+            (_, a), (k, b) = both[:2]
+            pairs |= {(a, b), (b, a)}
+            ca, cb = P["characters"][a], P["characters"][b]
+            out.append(("versus", f"{ca['name']}|{cb['name']}", f"{level(ca)}|{level(cb)}", lead + w[k][1],
+                        min(lead + w[k][1] + 4.0, L)))
+            last = tl["voice"] + w[k][1]
+        met |= {c for _, c in named}
+        yr = next((i for i, (x, _, _) in enumerate(w) if re.fullmatch(r"(19|20)\d\d[.,;:!?]?", x)), None)
+        if not out and yr is not None and tl["voice"] + w[yr][1] - last >= gap:  # a year the narration gives
+            out.append(("year", w[yr][0].strip(".,;:!?"), "", lead + w[yr][1], min(lead + w[yr][1] + 3.0, L)))
+            last = tl["voice"] + w[yr][1]
         if not out and not tl.get("hit") and not s["caption"] and tl["voice"] - last >= gap:
             sents, cur = [], []
             for i, (x, _, _) in enumerate(w):
@@ -621,7 +644,18 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     for kind, text, sub, a, b in tl.get("texts", []) if W >= H else []:
         if kind == "name":
             im = comic.name_plate(text, sub, acc)
-            over.append(prep(im, 60, round(H * .76) - im.height, a, t_out=b))
+            x0 = round(W * .05)  # inside the 5% title-safe margin
+            over.append(prep(im, x0, round(H * .76) - im.height, a, t_out=b))
+            ch = next((c for c in C.P["characters"].values() if str(c.get("name", "")).strip() == text), {})
+            for i, im in enumerate(comic.threat_bar(level(ch), acc) if level(ch) else []):  # frame, then cell by cell
+                over.append(prep(im, x0, round(H * .76) + 14, a + .4 + .07 * i, t_out=b))
+        elif kind == "versus":
+            (na, nb), (la, lb) = text.split("|"), sub.split("|")
+            im = comic.versus(na, nb, int(la), int(lb), acc)
+            over.append(prep(im, (W - im.width) // 2, round(H * .9) - im.height, a, t_out=b))
+        elif kind == "year":
+            im = comic.year_tag(text, acc)
+            over.append(prep(im, round(W * .95) - im.width, round(H * .08), a, t_out=b))
         else:
             im = comic.punch_text(text, maxw=W - 200)
             over.append(prep(im, (W - im.width) // 2, round(H * .1), a, pop=True, t_out=b))
@@ -1153,6 +1187,12 @@ def _selfcheck():
     tls = [mk("Time.", 0), mk("Then Thanos came.", 3), mk("Thanos smiled at last.", 20)]
     texts(tls, P, 30)
     assert "texts" not in tls[1] and tls[2]["texts"][0][:2] == ("name", "Thanos")  # a blocked plate waits, not lost
+    P["characters"]["THANOS"]["threat_level"] = "10"
+    P["characters"]["DEATH"] = dict(name="Mistress Death", alias="", threat_level=9)
+    tls = [mk("Thanos met Death.", 0), mk("Then Death faced Thanos at last.", 20), mk("It was 1991, and nobody knew.", 40)]
+    texts(tls, P, 30)
+    assert tls[1]["texts"][0][:3] == ("versus", "Mistress Death|Thanos", "9|10"), tls[1]
+    assert tls[2]["texts"][0][:2] == ("year", "1991") and level({"threat_level": "x"}) == 0
     tl = lambda text, v: dict(s=dict(template="full", sfx_text=text), Tf=6, voice=v, words=[("He", 0, .2), ("snapped", .3, .7)])
     tls = [tl("", 0), tl("", 4), tl("", 12), tl("POW", 30)]
     letter(tls, 30)
