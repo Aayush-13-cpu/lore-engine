@@ -327,7 +327,7 @@ def mood(tls, S):
         if s["template"] != "full" or s.get("page") or s["broll"] or not beats:
             continue
         beat = max(beats, key=beats.count)
-        s = dict(s, mood=beat if str(S.get("mood_grade", "auto")).lower() != "off" else "")
+        s = dict(s, beat=beat, mood=beat if str(S.get("mood_grade", "auto")).lower() != "off" else "")
         if not s["fx"] and AUTO_FX.get(beat) and str(S.get("auto_fx", "auto")).lower() != "off" \
                 and tl["voice"] - last >= float(S.get("fx_gap", 12)):
             s["fx"], last = AUTO_FX[beat], tl["voice"]
@@ -977,14 +977,50 @@ def render_scene(job):
 
 # ---------------- sound ----------------
 
+def band(x, lo, hi):
+    X = np.fft.rfft(x)
+    f = np.fft.rfftfreq(len(x), 1 / SR)
+    X[(f < lo) | (f > hi)] = 0
+    return np.fft.irfft(X, len(x))
+
+
+AMBIENCE = {"cosmic": "drone", "multiverse": "drone", "threat": "rumble", "tragedy": "wind", "tech": "hum"}
+
+
+def ambience(kind, n, seed=5):
+    """A slowly moving bed at RMS 1.0 (every kind sits at the same level) under a line: cosmic drone, low rumble,
+    wind or machine hum."""
+    rng, t = np.random.default_rng(seed), np.arange(n) / SR
+    noise = rng.normal(0, 1, n)
+    if kind == "drone":
+        x = (.5 * np.sin(2 * np.pi * 55 * t) + .3 * np.sin(2 * np.pi * 82.5 * t + 1)) * (.7 + .3 * np.sin(2 * np.pi * .1 * t))
+        x = x + band(noise, 40, 200) * .02
+    elif kind == "rumble":
+        x = band(noise, 20, 110) * (.6 + .4 * np.sin(2 * np.pi * .07 * t))
+    elif kind == "wind":
+        x = band(noise, 300, 1400) * (.5 + .5 * np.sin(2 * np.pi * .13 * t + rng.random() * 6)) ** 2
+    else:  # hum
+        x = sum(np.sin(2 * np.pi * f * t) / k for k, f in enumerate((60, 120, 180), 1)) + band(noise, 2000, 6000) * .01
+    return (x / (np.sqrt(np.mean(x ** 2)) + 1e-9)).astype(np.float32)
+
+
+def reveals(tls, gap=30.0):
+    """Start frames of revelation lines that get a riser and a short music dip (at most one per gap s)."""
+    out, last = set(), -gap
+    for tl in tls:
+        if tl["s"].get("beat") == "revelation" and not tl["s"]["sfx"] and tl["voice"] - last >= gap:
+            out.add(tl["start"])
+            last = tl["voice"]
+    return out
+
+
+def music_dips(tls, fps):
+    """(from, to) s where the music drops away: the strategic silence before a revelation lands."""
+    return [(tl["voice"] - .9, tl["voice"] + .7) for tl in tls if tl["start"] in reveals(tls)]
+
+
 def sfx_bank(seed=3):
     rng = np.random.default_rng(seed)
-
-    def band(x, lo, hi):
-        X = np.fft.rfft(x)
-        f = np.fft.rfftfreq(len(x), 1 / SR)
-        X[(f < lo) | (f > hi)] = 0
-        return np.fft.irfft(X, len(x))
 
     def norm(x, peak):
         return (x / (np.abs(x).max() + 1e-9) * peak).astype(np.float32)
@@ -1017,7 +1053,8 @@ def tracks(tls, audiodir, total, fps):
     """Voice (24 kHz, as the TTS made it) and SFX (48 kHz) timelines. Transitions stay silent."""
     voice = np.zeros(int(total * 24000) + 1, np.float32)
     sfx = np.zeros(int(total * SR) + 1, np.float32)
-    bank = sfx_bank()
+    bank, rev = sfx_bank(), reveals(tls)
+    beds = str(C.S.get("ambience", "auto")).lower() != "off"
     for tl in tls:
         s = tl["s"]
         if tl["speech"]:
@@ -1027,6 +1064,14 @@ def tracks(tls, audiodir, total, fps):
         if s["sfx"]:
             at = tl["start"] / fps + tl["hit"][1] if tl.get("hit") and s["sfx"] == "impact" else tl["voice"]
             place(sfx, bank[s["sfx"]], at - (len(bank["riser"]) / SR if s["sfx"] == "riser" else 0))
+        elif tl["start"] in rev:  # a revelation: the riser lands as the line starts
+            place(sfx, bank["riser"], tl["voice"] - len(bank["riser"]) / SR)
+        kind = AMBIENCE.get(s.get("beat")) if beds else None
+        if kind:  # starts 0.5 s before the picture (a J-cut), fades in and out
+            n = int(((tl["F"] + tl["out"]) / fps + .8) * SR)
+            ramp = np.minimum(1, np.minimum(np.arange(n), n - np.arange(n)) / (.5 * SR)).astype(np.float32)
+            # ambience_db: the bed's RMS level, ~6 dB under the music bed (-40 dBFS after music_db), felt, not heard
+            place(sfx, ambience(kind, n, tl["i"]) * ramp, tl["start"] / fps - .5, 10 ** (float(C.S.get("ambience_db", -46)) / 20))
     return voice, sfx
 
 
@@ -1057,7 +1102,7 @@ def music_bed(path, total):
     return [arg for _ in range(n) for arg in ("-i", path)], chain, label
 
 
-def mix(voice, sfx, total, out, P, work):
+def mix(voice, sfx, total, out, P, work, dips=()):
     S = P["settings"]
     vp, sp = os.path.join(work, "voice.wav"), os.path.join(work, "sfx.wav")
     sf.write(vp, voice, 24000)
@@ -1069,7 +1114,8 @@ def mix(voice, sfx, total, out, P, work):
     fc = (f"[0:a]aresample=48000,highpass=f=60,acompressor=threshold=0.125:ratio=2:attack=15:release=200:makeup=1.5,"
           f"deesser=i=0.2,{st}" + (",asplit=2[v][key];" if music else "[v];") + f"[1:a]{st}[s];")
     if music:
-        fc += (f"{chain}{bed}{st},volume={float(S['music_db'])}dB,afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
+        dip = "".join(f"volume='1-0.75*max(0,min(1,min((t-{a:.2f})/0.3,({b:.2f}-t)/0.3)))':eval=frame," for a, b in dips)
+        fc += (f"{chain}{bed}{st},volume={float(S['music_db'])}dB,{dip}afade=t=in:d=2,afade=t=out:st={max(total - 4, 0):.2f}:d=4[m];"
                "[m][key]sidechaincompress=threshold=0.05:ratio=6:attack=40:release=600[duck];"
                "[v][duck][s]amix=inputs=3:normalize=0:duration=first,")
     else:
@@ -1175,7 +1221,7 @@ def main(plan_path, imgdir, audiodir, outdir, shard=""):
     total = sum(tl["F"] for tl in tls) / fps
     voice, sfx = tracks(tls, audiodir, total, fps)
     mixed = os.path.join(work, "mix.wav")
-    mix(voice, sfx, total, mixed, P, work)
+    mix(voice, sfx, total, mixed, P, work, music_dips(tls, fps))
 
     cs = cues(tls)
     with open(os.path.join(outdir, "captions.srt"), "w") as f:
@@ -1293,6 +1339,11 @@ def _selfcheck():
     assert [tl["s"]["fx"] for tl in tls] == ["stars", "", "snow", ""] and tls[1]["s"]["mood"] == "threat"  # 12 s apart
     fr = np.full((8, 8, 3), 128, np.uint8)
     assert grader("tragedy")(fr).std() < 3 and grader("") is None
+    for k in ("drone", "rumble", "wind", "hum"):
+        x = ambience(k, SR // 2)
+        assert x.shape == (SR // 2,) and abs(np.sqrt(np.mean(x ** 2)) - 1) < 1e-3
+    rv = [dict(s=dict(beat="revelation", sfx=""), voice=v, start=v * 30) for v in (5, 20, 40)]
+    assert reveals(rv) == {150, 1200} and music_dips(rv, 30)[0] == (5 - .9, 5 + .7)  # 30 s apart
     for k in ("rays", "fog", "film", "hud"):
         g = np.full((72, 128, 3), 60, np.uint8)
         ambient(k, 128, 72, 1)(g, 1.0)  # draws in place without errors
