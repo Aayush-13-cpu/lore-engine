@@ -20,7 +20,7 @@ def shots(tls, fps):
     """(scene n, seconds) for every AI-picture shot, cuts included."""
     out = []
     for tl in tls:
-        if tl["s"]["template"] == "full" and not tl["s"].get("page") and not tl["s"]["broll"]:
+        if tl["s"]["template"] == "full" and not tl["s"].get("page") and not tl["s"]["broll"] and tl["s"]["images"]:
             edges = [0.0] + R.scene_cuts(tl) + [tl["F"] / fps]
             out += [(tl["s"]["n"], b - a) for a, b in zip(edges, edges[1:]) if b > a]
     return out
@@ -74,9 +74,9 @@ def verdict(S, sh, m, stars=()):
         hard.append(f"audio {m['a']:.2f}s vs video {m['v']:.2f}s")
     if m["black"]:
         hard.append("black for >1 s at " + ", ".join(f"{a:.1f}s" for a, _ in m["black"]))
-    long_ = [(n, d) for n, d in sh if d > 3.5]
+    long_ = [(n, d) for n, d in sh if d > 6]
     if long_:
-        warn.append(f"{len(long_)} AI shot(s) over 3.5 s (lines with no pause to cut on): "
+        warn.append(f"{len(long_)} AI picture(s) held over 6 s (raise image_budget, or split the row): "
                     + ", ".join(f"scene {n} {d:.1f}s" for n, d in long_[:8]))
     if m["frozen"]:
         warn.append(f"{len(m['frozen'])} frozen stretch(es) over 6 s")
@@ -98,6 +98,7 @@ def main(plan_path, imgdir, audiodir, outdir):
     avg = sum(d for _, d in sh) / max(len(sh), 1)
     hits = [f"scene {tl['s']['n']} {tl['hit'][0]}" for tl in tls if tl.get("hit")]
     calls = [f"scene {tl['s']['n']} {tl['s']['callout']}" for tl in tls if tl["s"].get("callout")]
+    said = [f"scene {tl['s']['n']} {kind} {text}" for tl in tls for kind, text, *_ in tl.get("texts", [])]
     lost = sorted({tl["s"]["callout"] for tl in tls if tl["s"].get("callout")
                    and not os.path.exists(os.path.join(imgdir, f"cut_{tl['s']['callout']}.png"))})
     warn += [f"green-screen picture missing, callout skipped: {', '.join(f'cut_{c}.png' for c in lost)}"] if lost else []
@@ -111,6 +112,7 @@ def main(plan_path, imgdir, audiodir, outdir):
              f"| Lettering on the word | {', '.join(hits) or 'none'} |",
              f"| Subscenes (lines with 2+ pictures) | {sum(len(tl['s']['images']) > 1 for tl in tls if tl['s']['template'] == 'full')} |",
              f"| Green-screen callouts | {', '.join(calls) or 'none'} |",
+             f"| Text on screen | {', '.join(said) or 'none'} |",
              f"| Black over 1 s | {len(m['black'])} |", f"| Frozen over 6 s | {len(m['frozen'])} |", ""]
     lines += ["## Failures", *[f"- {x}" for x in hard], ""] if hard else []
     lines += ["## Warnings", *[f"- {x}" for x in warn], ""] if warn else []
@@ -123,8 +125,8 @@ def _selfcheck():
     S = dict(lufs=-14)
     ok = dict(v=60.0, a=59.95, lufs=-14.2, peak=-1.6, black=[], frozen=[])
     assert verdict(S, [(1, 2.0)], ok) == ([], [])
-    hard, warn = verdict(S, [(1, 4.2)], dict(ok, lufs=-16.5, a=58.0, black=[(3.0, 4.5)]))
-    assert len(hard) == 3 and "scene 1 4.2s" in warn[0], (hard, warn)
+    hard, warn = verdict(S, [(1, 6.2)], dict(ok, lufs=-16.5, a=58.0, black=[(3.0, 4.5)]))
+    assert len(hard) == 3 and "scene 1 6.2s" in warn[0], (hard, warn)
     assert verdict(S, [], dict(ok, black=[(132.3, 143.0)]), [(131.2, 144.3)]) == ([], [])  # warp starfield is not a hole
 
 

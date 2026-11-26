@@ -1,5 +1,6 @@
 """Comic-book graphics with Pillow: print pass, lettering, page layouts, cards, green-screen frames, thumbnails."""
 import os
+import re
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
@@ -97,6 +98,34 @@ def sfx_word(text, color="#FFE14D", size=200):
     d.text((48, 28), text, font=f, fill=(0, 0, 0, 200), stroke_width=12, stroke_fill=(0, 0, 0, 200))
     d.text((36, 16), text, font=f, fill=rgb(color), stroke_width=10, stroke_fill=INK)
     return im.rotate(8, expand=True, resample=Image.BICUBIC)
+
+
+def name_plate(name, sub, accent="#E62429"):
+    """Lower-third tag on a character's first mention: name in comic type over alias and first appearance."""
+    f1, f2 = font("title", 92), font("letter", 36)
+    name = re.sub(r"^THE ", "", name.upper())
+    w = int(max(f1.getlength(name), f2.getlength(sub))) + 70
+    im = Image.new("RGBA", (w + 10, 170), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rectangle([10, 10, w + 9, 169], fill=(0, 0, 0, 150))
+    d.rectangle([0, 0, w, 159], fill=INK + (235,), outline=rgb(accent), width=3)
+    d.rectangle([0, 0, 14, 159], fill=rgb(accent) + (255,))
+    d.text((38, 4), name, font=f1, fill=(255, 255, 255))
+    d.text((40, 108), sub, font=f2, fill=rgb("#F6E27A"))
+    return im
+
+
+def punch_text(text, color="#FFFFFF", size=130, maxw=1700):
+    """The narration's short punch sentence ("Every star.") in big inked type, shrunk to fit the frame."""
+    text = text.upper().rstrip(".")  # "SPACE" reads as lettering; ! and ? stay
+    while size > 60 and font("title", size).getlength(text) > maxw - 60:
+        size = int(size * .9)
+    f = font("title", size)
+    im = Image.new("RGBA", (int(f.getlength(text)) + 60, int(size * 1.35)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.text((38, 22), text, font=f, fill=(0, 0, 0, 170), stroke_width=10, stroke_fill=(0, 0, 0, 170))
+    d.text((28, 12), text, font=f, fill=rgb(color), stroke_width=8, stroke_fill=INK)
+    return im
 
 
 def watermark(text):

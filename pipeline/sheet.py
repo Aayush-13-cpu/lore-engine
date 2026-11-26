@@ -26,7 +26,8 @@ DEFAULTS = dict(
     channel_name="LORE VAULT", fps=30, width=1920, height=1080,
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
     tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
-    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", extra_images=8, cutouts=6, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
+    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", auto_text="auto", shot_seconds=3.5, image_budget=140, cutouts=6, callout_gap=20,
+    text_gap=15, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
     shorts_count=1, shorts_min=25, shorts_max=58, watermark="yes",
     shorts_cta="Want to know how it ends? The full story is on my channel.",
 )
@@ -63,6 +64,31 @@ COMPOSE = ("Composition: one clear focal subject placed on a rule-of-thirds line
            "widescreen illustration that fills the frame edge to edge.")
 LIGHT = ("Lighting: a strong key light from one side, deep spotted-black shadows and a bright rim light that separates the "
          "subject from the background, high contrast and a dramatic, cinematic mood.")
+
+
+WPS = 2.6  # narration words per second: sizes subscenes before the voice exists
+SHOTS = ["A tight close-up", "A wide establishing shot", "A low-angle hero shot", "An over-the-shoulder shot",
+         "A detail insert shot"]  # each subscene picture is a different real shot of the moment, never a crop
+CLAUSE = re.compile(r"^(and|but|then|when|as|while|until|so|because|who|which|where|before|after|or|now|yet)$", re.I)
+
+
+def split_words(words, m):
+    """Word indexes where pictures 2..m of a line start: near equal shares, on punctuation or a clause word,
+    every piece at least 4 words."""
+    cands = [(i, words[i - 1][-1:] in ",;:.!?—-" or bool(CLAUSE.match(words[i].strip(".,;:!?\"'").lower())))
+             for i in range(4, len(words) - 3)]
+    cuts = []
+    for k in range(1, m):
+        ok = [c for c in cands if c[0] >= (cuts[-1] + 4 if cuts else 4)]
+        if not ok:
+            break
+        cuts.append(min(ok, key=lambda c: abs(c[0] - len(words) * k / m) - 2.5 * c[1])[0])
+    return cuts
+
+
+def name_re(ch):
+    nm = str(ch.get("name", "")).strip()
+    return re.compile(rf"\b{re.escape(nm)}\b") if nm else None
 
 
 def scene_prompt(style, visual, cast):
@@ -202,29 +228,46 @@ def build(vid, subset="", path=SHEET):
         scenes.append(s)
 
     jobs = {j["name"]: j for j in images}
-    # a few more pictures: the longest single-picture AI lines get a close-up from another angle as a second subscene
-    for s in sorted((s for s in scenes if s["template"] == "full" and not s.get("page") and len(s["images"]) == 1
-                     and s["images"][0] in jobs and len(s["narration"].split()) >= 18),
-                    key=lambda s: -len(s["narration"].split()))[:int(num(S.get("extra_images"), 0))]:
-        j, name = jobs[s["images"][0]], f"s{s['n']:03d}_1.png"
-        v = f"A dramatic close-up from a different camera angle on the most important subject of this same moment: {j['visual']}"
-        images.append(dict(name=name, prompt=scene_prompt(style, v, [chars[c] for c in j["cast"]]), seed=seed(vid, v),
-                           refs=j["refs"], visual=v, cast=j["cast"]))
-        s["images"].append(name)
-    # green screen: a character named in an AI line whose picture doesn't show them slides in on their name
-    cut_ids, seen = [], set()
+    # subscenes: a long AI line gets 2-4 new pictures, one per part of the sentence, cut on the word it starts on.
+    # Each costs ~36 min of runner time, so image_budget caps them and the longest lines get theirs first.
+    if str(S.get("shot_cuts", "auto")).lower() != "off":
+        lines = [s for s in scenes if s["template"] == "full" and not s.get("page") and len(s["images"]) == 1
+                 and s["images"][0] in jobs]
+        want = {s["n"]: min(4, round(len(s["narration"].split()) / WPS / num(S["shot_seconds"], 3.5))) for s in lines}
+        spare = int(num(S["image_budget"])) - sum(not j.get("src") for j in images) - int(num(S.get("cutouts"), 0))
+        give = dict.fromkeys(want, 1)
+        for r in range(2, 5):  # round-robin: every long line gets its 2nd picture before any gets a 3rd
+            for s in sorted(lines, key=lambda s: -len(s["narration"].split())):
+                if spare > 0 and want[s["n"]] >= r:
+                    give[s["n"]], spare = r, spare - 1
+        for s in lines:
+            words, j = s["narration"].split(), jobs[s["images"][0]]
+            at = split_words(words, give[s["n"]])
+            for k, (a, b) in enumerate(zip(at, at[1:] + [len(words)]), 1):
+                part = words[a:b][1:] if CLAUSE.match(words[a].strip(".,;:!?\"'")) else words[a:b]
+                part = " ".join(part).strip(" ,;:—-").rstrip(".!?")
+                named = [c for c, ch in chars.items() if name_re(ch) and name_re(ch).search(part)]
+                cast = (named or j["cast"])[:2]  # "he" in this part is still the line's character
+                v = f"{SHOTS[(s['n'] + k) % len(SHOTS)]}: {part}. Same scene, setting and colours as: {j['visual']}"
+                images.append(dict(name=f"s{s['n']:03d}_{k}.png", prompt=scene_prompt(style, v, [chars[c] for c in cast]),
+                                   seed=seed(vid, v), refs=[f"ref_{c}.png" for c in cast], visual=v, cast=cast))
+                s["images"].append(f"s{s['n']:03d}_{k}.png")
+                cast_ids += cast
+            s["splits"] = at[:len(s["images"]) - 1]
+        jobs = {j["name"]: j for j in images}
+    # green screen: a character named in a line whose pictures don't show them slides in on their name,
+    # at most once every callout_gap seconds of narration
+    cut_ids, t, last = [], 0.0, -1e9
     for s in scenes:
-        if s["template"] != "full" or s.get("page") or not s["images"] or s["characters"] \
-                or any(jobs.get(i, {}).get("cast") for i in s["images"]):  # the picture already shows someone
-            continue
-        hits = sorted((m.start(), c) for c, ch in chars.items() if str(ch.get("name", "")).strip()
-                      for m in [re.search(rf"\b{re.escape(str(ch['name']).strip())}\b", s["narration"])] if m)
-        for _, c in hits:
-            if (s["chapter"], c) not in seen and (c in cut_ids or len(cut_ids) < int(num(S.get("cutouts"), 0))):
-                seen.add((s["chapter"], c))
-                s["callout"] = c
+        shown = set(s["characters"]) | {c for i in s["images"] for c in jobs.get(i, {}).get("cast", [])}
+        if s["template"] == "full" and not s.get("page") and s["images"] and t - last >= num(S.get("callout_gap"), 20):
+            hits = sorted((m.start(), c) for c, ch in chars.items() if c not in shown and name_re(ch)
+                          for m in [name_re(ch).search(s["narration"])] if m)
+            c = next((c for _, c in hits if c in cut_ids or len(cut_ids) < int(num(S.get("cutouts"), 0))), None)
+            if c:
+                s["callout"], last = c, t
                 cut_ids += [] if c in cut_ids else [c]
-                break
+        t += len(s["narration"].split()) / WPS
     for c in cut_ids:
         images.append(dict(name=f"cut_{c}.png", prompt=cutout_prompt(style, chars[c]), seed=seed(vid, "cut", c),
                            refs=[f"ref_{c}.png"], visual="", cast=[c], cutout=True, size=[640, 1024], upscale=False))
@@ -262,7 +305,8 @@ def build(vid, subset="", path=SHEET):
         sys.exit("Sheet problems:\n  " + "\n  ".join(errors))
     return dict(
         video={k: str(v).strip() for k, v in video.items()}, settings=S, style=style,
-        characters={c: chars[c] for c in dict.fromkeys(cast_ids)},
+        characters={c: chars[c] for c in dict.fromkeys(cast_ids + [c for c, ch in chars.items() if name_re(ch) and any(
+            name_re(ch).search(s["narration"]) for s in scenes)])},  # named ones too: name plates, Flow's giveaway list
         scenes=scenes, images=images, refs=refs, shorts=shorts,
         pronounce={str(p["word"]).strip(): str(p["say_as"]).strip() for p in T.get("Pronounce", []) if p.get("word")},
         pages=pages, sources=srcs,

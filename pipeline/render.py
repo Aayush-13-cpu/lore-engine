@@ -36,13 +36,13 @@ DEPTH = None  # per-process ONNX session, loaded on first use
 PARALLAX = {"full", "page", "issue"}  # templates whose picture gets depth layers (gs:* too)
 PAUSE = {"?": 1.5, "!": 1.4, ".": 1.2, ";": 0.8, ":": 0.8, ",": 0.45}  # breath after a line, by how it ends
 assert set(XFADE) | {"auto"} == TRANSITIONS
-AUTO_T = ["fade", "cut", "whip", "cut", "dissolve", "cut", "zoom", "cut"]  # mostly cuts: flashy-every-scene reads amateur
+AUTO_T = ["cut", "fade", "cut", "dissolve"]  # cuts and soft fades only: whips and zooms every scene read amateur
 AUTO_M = ["in", "right", "out", "left", "in", "up", "out", "down"]
-PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y)
-    "in": [(0, 1.0, .5, .5), (1, 1.16, .5, .46)], "out": [(0, 1.16, .5, .46), (1, 1.0, .5, .5)],
-    "left": [(0, 1.1, .62, .5), (1, 1.1, .38, .5)], "right": [(0, 1.1, .38, .5), (1, 1.1, .62, .5)],
-    "up": [(0, 1.12, .5, .62), (1, 1.12, .5, .38)], "down": [(0, 1.12, .5, .38), (1, 1.12, .5, .62)],
-    "static": [(0, 1.03, .5, .5), (1, 1.05, .5, .5)], "shake": [(0, 1.12, .5, .5), (1, 1.16, .5, .5)],
+PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y): slow and small, like a rostrum camera
+    "in": [(0, 1.0, .5, .5), (1, 1.06, .5, .48)], "out": [(0, 1.06, .5, .48), (1, 1.0, .5, .5)],
+    "left": [(0, 1.06, .54, .5), (1, 1.06, .46, .5)], "right": [(0, 1.06, .46, .5), (1, 1.06, .54, .5)],
+    "up": [(0, 1.06, .5, .54), (1, 1.06, .5, .46)], "down": [(0, 1.06, .5, .46), (1, 1.06, .5, .54)],
+    "static": [(0, 1.02, .5, .5), (1, 1.03, .5, .5)], "shake": [(0, 1.08, .5, .5), (1, 1.1, .5, .5)],
 }
 CARDS = {"title", "sting", "quote", "endscreen"}
 ROMAN = "I II III IV V VI VII VIII IX X XI XII XIII XIV XV XVI XVII XVIII XIX XX".split()
@@ -300,6 +300,8 @@ def timeline(P, meta, fps, pad=None):
     out[-1]["out"] = 0
     if str(P["settings"].get("auto_sfx", "auto")).lower() != "off":
         letter(out, fps)
+    if str(P["settings"].get("auto_text", "auto")).lower() != "off":
+        texts(out, P, fps, float(P["settings"].get("text_gap", 15)))
     return out
 
 
@@ -325,21 +327,74 @@ def letter(tls, fps, gap=10.0):
                 break
 
 
+STOP = {"he", "she", "it", "they", "we", "i", "you", "him", "her", "them", "his", "its", "their", "was", "is", "were",
+        "this", "that"}  # "He tricked some." or "Keeping it was." mean nothing on screen without the line around them
+
+
+def name_at(words, name):
+    """Index of the first word that is part of a character's name (any capitalised part: Surfer, Thanos, Death)."""
+    parts = {re.sub(r"[^A-Za-z]", "", x) for x in str(name).split() if x[:1].isupper() and len(x) > 2}
+    return next((i for i, w in enumerate(words) if re.sub(r"[^A-Za-z]", "", w[0]) in parts), None)
+
+
+def texts(tls, P, fps, gap=15.0):
+    """tl["texts"] = [(kind, text, sub, in, out)] in s into the clip: a name plate on a character's first mention in the
+    video, else the narration's own short punch sentences ("Time. Space. Reality.") in big type; one beat per gap s."""
+    seen, last = set(), -gap
+    for tl in tls:
+        s, w = tl["s"], tl["words"]
+        if s["template"] != "full" or s.get("page") or s["broll"] or not w:
+            continue
+        lead, L, out = tl["Tf"] / 2 / fps, (tl["F"] + tl["out"]) / fps, []
+        for c, ch in P["characters"].items():
+            k = name_at(w, ch.get("name", ""))
+            fa = str(ch.get("first_appearance", "") or "").strip()
+            sub = " · ".join(x for x in (str(ch.get("alias", "") or "").strip(), fa and f"First appearance: {fa}") if x)
+            if c in seen or k is None or not sub:
+                continue
+            if not out and tl["voice"] + w[k][1] - last >= gap:  # too soon after another beat: wait for the next mention
+                out.append(("name", str(ch["name"]).strip(), sub, lead + w[k][1], min(lead + w[k][1] + 3.5, L)))
+                last = tl["voice"] + w[k][1]
+                seen.add(c)
+        if not out and not tl.get("hit") and not s["caption"] and tl["voice"] - last >= gap:
+            sents, cur = [], []
+            for i, (x, _, _) in enumerate(w):
+                cur.append(i)
+                if x[-1:] in ".!?":
+                    sents, cur = sents + [cur], []
+            punchy = [len(q) <= 4 and not {re.sub(r"[^a-z]", "", w[i][0].lower()) for i in q} & STOP for q in sents]
+            run = []
+            for q, ok in zip(sents, punchy):  # the first run of punch sentences in the line is one beat
+                if ok:
+                    run.append(q)
+                elif run:
+                    break
+            for q, nxt in zip(run, run[1:] + [None]):
+                end = lead + w[nxt[0]][1] if nxt else min(lead + w[q[-1]][2] + 0.8, L)
+                out.append(("punch", " ".join(w[i][0] for i in q), "", lead + w[q[0]][1], end))
+            if run:
+                last = tl["voice"] + w[run[0][0]][1]
+        if out:
+            tl["texts"] = out
+
+
 # ---------------- pictures ----------------
 
-def prep(img, x, y, t_in, pop=False):
-    """RGBA overlay -> (float BGRA cropped to its visible box, x, y, appear time, pop)."""
+def prep(img, x, y, t_in, pop=False, t_out=None):
+    """RGBA overlay -> (float BGRA cropped to its visible box, x, y, appear time, pop, leave time or None)."""
     box = img.getchannel("A").getbbox()
     if not box:
         return None
     img = img.crop(box)
     a = np.asarray(img, np.float32)
-    return np.dstack([a[..., 2::-1], a[..., 3:] / 255]), x + box[0], y + box[1], t_in, pop
+    return np.dstack([a[..., 2::-1], a[..., 3:] / 255]), x + box[0], y + box[1], t_in, pop, t_out
 
 
 def blend(frame, ov, tau):
-    img, x, y, t_in, pop = ov
+    img, x, y, t_in, pop, t_out = ov
     a = min((tau - t_in) / (0.35 if pop in ("left", "right") else 0.22), 1.0)
+    if t_out is not None:
+        a = min(a, (t_out - tau) / 0.2)
     if a <= 0:
         return
     if pop in ("left", "right"):  # a green-screen character slides in from that side, easing out
@@ -376,73 +431,21 @@ def motion_keys(s, i, L, lead):
         m = {"title": "in", "sting": "in", "quote": "in", "dossier": "in", "endscreen": "static"}.get(
             s["template"], AUTO_M[i % len(AUTO_M)])
     if m == "punch":
-        return [(0, 1.0, .5, .5), (min((lead + .3) / L, .5), 1.17, .5, .47), (1, 1.22, .5, .46)]
+        return [(0, 1.0, .5, .5), (min((lead + .3) / L, .5), 1.08, .5, .48), (1, 1.1, .5, .47)]
     return PRESETS[m]
 
 
-CLAUSE = re.compile(r"^(and|but|then|when|as|while|until|so|because|who|which|where|before|after|or|now|yet)$", re.I)
-
-
-def cut_times(words, lead, L, lo=1.2, hi=3.5, aim=2.3):
-    """Cut points (s into the clip) for a line held on one picture: in the gaps between words, preferring
-    punctuation and clause words, so every shot lasts lo..hi s like a human edit."""
-    cands = [(lead + (b + a2) / 2, w[-1:] in ",;:.!?-—" or bool(CLAUSE.match(w2.strip(".,;:!?\"'").lower())))
-             for (w, _, b), (w2, a2, _) in zip(words, words[1:])]
-    cuts, start = [], 0.0
-    while L - start > hi:
-        ok = [c for c in cands if lo <= c[0] - start <= hi and L - c[0] >= lo]
-        if not ok:
-            break
-        start = min(ok, key=lambda c: abs(c[0] - start - aim) - 0.6 * c[1])[0]
-        cuts.append(start)
-    return cuts
-
-
-def focus_points(canvas, depth=None):
-    """(subject, mass) focus points in 0..1: the nearest thing from the depth map, else the busiest ink."""
-    if depth is None:
-        g = cv2.cvtColor(cv2.resize(canvas, (256, 144), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-        w = cv2.GaussianBlur(np.abs(cv2.Laplacian(g.astype(np.float32), cv2.CV_32F)), (0, 0), 6)
-    else:
-        w = depth ** 3
-    h, wd = w.shape
-    gy, gx = np.mgrid[0:h, 0:wd]
-    top = w >= np.quantile(w, .9)
-
-    def centre(m):
-        m = m.astype(np.float32) + 1e-9
-        return (float(np.clip((gx * m).sum() / m.sum() / wd, .3, .7)), float(np.clip((gy * m).sum() / m.sum() / h, .32, .68)))
-    return centre(w * top), centre(w)
-
-
-def cut_plan(keys, n, cuts, focus):
-    """[(picture, keys, frames, t0)]: every picture (subscene) opens on its own move, the wide; then close-ups on the
-    subject and mediums on the group alternate across the pictures, so no two neighbours share a framing."""
-    m, edges, out = len(keys), [0] + [round(t * C.fps) for t in cuts] + [n], []
-    for j, (a, b) in enumerate(zip(edges, edges[1:])):
-        p, k = j % m, keys[j % m]
-        if j >= m:
-            r = j - m + 1
-            fx, fy = focus[p][0] if r % 2 else focus[p][1]
-            z, d = (1.75, .03) if r % 2 else (1.3, .05)  # >=30% size change between neighbours: no jump cuts
-            d *= 1 if r % 4 < 2 else -1
-            k = [(0, z, fx - d, fy), (1, z * 1.05, fx + d, fy)]
-        out.append((p, k, b - a, a / C.fps))
-    return out
-
-
 def scene_cuts(tl):
-    """Where a line held on one AI picture is cut (s into its clip); [] = one shot (cards, pages, b-roll, static)."""
+    """Cut times (s into the clip) between a line's pictures: on the word where each picture's part of the sentence
+    starts (the sheet's splits), else an even share; [] = one picture (cards, pages, b-roll, single shots)."""
     s = tl["s"]
-    m = len(s["images"]) if s["template"] == "full" else 1  # subscenes: several pictures on one line
-    L = (tl["F"] + tl["out"]) / C.fps
-    even = [L * k / m for k in range(1, m)]
-    if s["template"] != "full" or s.get("page") or s["broll"]:
+    m = len(s["images"]) if s["template"] == "full" and not s.get("page") and not s["broll"] else 1
+    if m < 2:
         return []
-    if str(C.S.get("shot_cuts", "auto")).lower() == "off" or (m == 1 and s["motion"] in ("static", "shake")):
-        return even  # old look, but every picture still gets its share of the line
-    cuts = cut_times(tl["words"], tl["Tf"] / 2 / C.fps, L)
-    return cuts if len(cuts) >= m - 1 else even
+    L, lead, w, at = (tl["F"] + tl["out"]) / C.fps, tl["Tf"] / 2 / C.fps, tl["words"], s.get("splits") or []
+    if len(at) == m - 1 and len(w) == len(s["narration"].split()):
+        return [lead + (w[i - 1][2] + w[i][1]) / 2 for i in at]
+    return [L * k / m for k in range(1, m)]
 
 
 def shaker(s, lead, seed):
@@ -588,15 +591,23 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     if captions and s["caption"] and tpl not in CARDS | {"split", "issue"}:
         over.append(prep(comic.caption_box(s["caption"], st.get("caption_bg") or "#F6E27A", st.get("caption_fg") or "#111111"),
                          60, 160 if bars(st) else 50, lead + 0.3))  # clear of the letterbox bar
+    plates = [x for x in tl.get("texts", []) if x[0] == "name"] if W >= H else []
     if s.get("callout") and W >= H:  # green screen: the named character slides in on their name
-        name = str(C.P["characters"].get(s["callout"], {}).get("name", "")).split()
-        at = next((lead + a for w, a, _ in tl["words"] if name and re.sub(r"[^a-z]", "", w.lower()) ==
-                   re.sub(r"[^a-z]", "", name[0].lower())), lead + 0.5)
-        fig = cutout(f"cut_{s['callout']}.png", canvas, round(H * .68 * vis))
+        k = name_at(tl["words"], C.P["characters"].get(s["callout"], {}).get("name", ""))
+        at = lead + (tl["words"][k][1] if k is not None else 0.5)
+        fig = cutout(f"cut_{s['callout']}.png", canvas, round(H * .8 * vis))
         if fig is not None:
-            left = s["n"] % 2 == 1
+            left = s["n"] % 2 == 1 and not plates  # the name plate sits bottom-left
+            fig = fig if left else fig.transpose(Image.FLIP_LEFT_RIGHT)  # alternate sides face both ways
             over.append(prep(fig, round(W * .03) if left else round(W * .97) - fig.width,
                              round(H * (1 + vis) / 2) - round(fig.height * .94), at, "left" if left else "right"))
+    for kind, text, sub, a, b in tl.get("texts", []) if W >= H else []:
+        if kind == "name":
+            im = comic.name_plate(text, sub, acc)
+            over.append(prep(im, 60, round(H * .76) - im.height, a, t_out=b))
+        else:
+            im = comic.punch_text(text, maxw=W - 200)
+            over.append(prep(im, (W - im.width) // 2, round(H * .1), a, pop=True, t_out=b))
     text, at = tl.get("hit") or (s["sfx_text"], lead)
     if text:
         im = comic.sfx_word(text.upper(), st.get("sfx_color") or "#FFE14D")
@@ -794,18 +805,16 @@ def render_scene(job):
         def shot_frames():
             for s2, tl2, count, ld in shots:
                 pics = s2["images"] if cuts and len(shots) == 1 else s2["images"][:1]
-                sets = [build(dict(s2, images=[p]), tl2, C.W, C.H, 1.4 if cuts else 1.0) for p in pics] or \
-                    [build(s2, tl2, C.W, C.H)]  # 1.4x canvas: close-ups stay sharp
+                sets = [build(dict(s2, images=[p]), tl2, C.W, C.H) for p in pics] or [build(s2, tl2, C.W, C.H)]
                 over, reveal = sets[0][1], sets[0][3]
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
-                depths = [depth_of(x[0]) if deep else None for x in sets]
                 keys = [sets[0][2]] + [PRESETS[AUTO_M[(tl["i"] + p) % len(AUTO_M)]] for p in range(1, len(sets))]
-                plan = cut_plan(keys, count, cuts, [focus_points(x[0], d) for x, d in zip(sets, depths)]) if cuts \
-                    else [(0, keys[0], count, 0.0)]
+                edges = [0] + [round(t * C.fps) for t in cuts[:len(sets) - 1]] + [count]
                 if tl2.get("hit"):  # shake (and a sheet flash) on the lettered word, not at the line start
                     s2, ld = dict(s2, sfx=s2["sfx"] or "impact"), tl2["hit"][1]
-                for p, k2, c2, t0 in plan:
-                    yield from frames(sets[p][0], k2, c2, C.W, C.H, over, s2, ld, reveal, seed, depths[p], t0)
+                for p, (a, b) in enumerate(zip(edges, edges[1:])):
+                    yield from frames(sets[p][0], keys[p], b - a, C.W, C.H, over, s2, ld, reveal, seed,
+                                      depth_of(sets[p][0]) if deep else None, a / C.fps)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
         encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
@@ -1095,17 +1104,25 @@ def _selfcheck():
     assert abs(got[1] - 300) <= 2, got
     got = to_gutters((560, 730, 1000, 1000), (rn, cn), 1000, 1000)
     assert abs(got[0] - 500) <= 2 and abs(got[1] - 700) <= 2, got  # the strongest peak, not the weak band
-    words = [(w, i * .4, i * .4 + .3) for i, w in enumerate("He came, and the sky burned. Then nothing was left of the world".split())]
-    cuts = cut_times(words, .2, 5.4)  # a 5.4 s line on one picture
-    shots = [b - a for a, b in zip([0] + cuts, cuts + [5.4])]
-    assert cuts and all(1.2 <= d <= 3.5 for d in shots), shots
-    assert len(cut_times(words[:4], .2, 3.0)) == 0  # short lines stay one shot
     global C
     C, old = type("C", (), dict(fps=30))(), C
-    plan = cut_plan(["wideA", "wideB"], 300, [2, 4, 6, 8], [((.4, .4), (.5, .5))] * 2)
-    assert [p for p, *_ in plan] == [0, 1, 0, 1, 0] and plan[1][1] == "wideB", plan  # both pictures open on a wide
-    assert all(a[1] != b[1] for a, b in zip(plan, plan[1:])) and sum(x[2] for x in plan) == 300
+    w5 = [(x, i * .5, i * .5 + .4) for i, x in enumerate("With one snap of his fingers, Thanos erased half".split())]
+    s5 = dict(template="full", images=["a", "b"], splits=[6], narration=" ".join(x for x, *_ in w5), broll="")
+    assert scene_cuts(dict(s=s5, F=150, out=0, Tf=0, words=w5)) == [(2.9 + 3.0) / 2]  # the cut lands on "Thanos"
+    assert scene_cuts(dict(s=dict(s5, splits=[]), F=150, out=0, Tf=0, words=w5)) == [2.5]  # no splits: even share
+    assert scene_cuts(dict(s=dict(s5, images=["a"]), F=150, out=0, Tf=0, words=w5)) == []
     C = old
+    P = dict(characters=dict(THANOS=dict(name="Thanos", alias="The Mad Titan", first_appearance="Iron Man #55 (1973)")))
+    mk = lambda text, v: dict(s=dict(template="full", caption="", broll="", narration=text), Tf=0, F=300, out=0, voice=v,
+                              words=[(x, i * .5, i * .5 + .4) for i, x in enumerate(text.split())])
+    tls = [mk("Then Thanos came for the stones.", 0), mk("Time. Space. Reality.", 5), mk("He tricked some. Power. Mind.", 30)]
+    texts(tls, P, 30)
+    assert tls[0]["texts"][0][:3] == ("name", "Thanos", "The Mad Titan · First appearance: Iron Man #55 (1973)"), tls[0]
+    assert "texts" not in tls[1]  # within 15 s of the name plate: one beat at a time
+    assert [x[1] for x in tls[2]["texts"]] == ["Power.", "Mind."] and tls[2]["texts"][0][4] == 1.5 + 0.5, tls[2]
+    tls = [mk("Time.", 0), mk("Then Thanos came.", 3), mk("Thanos smiled at last.", 20)]
+    texts(tls, P, 30)
+    assert "texts" not in tls[1] and tls[2]["texts"][0][:2] == ("name", "Thanos")  # a blocked plate waits, not lost
     tl = lambda text, v: dict(s=dict(template="full", sfx_text=text), Tf=6, voice=v, words=[("He", 0, .2), ("snapped", .3, .7)])
     tls = [tl("", 0), tl("", 4), tl("", 12), tl("POW", 30)]
     letter(tls, 30)

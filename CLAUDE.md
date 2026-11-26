@@ -32,6 +32,8 @@ Local Python with the deps: `~/.cache/lore-engine-venv/bin/python`.
 - Never prompt Flow with lookalikes of copyrighted characters: those rows are `drawn_by=flux`.
 - No GPU, no paid APIs, no video generation: all motion comes from still images.
 - New generated images are the expensive stage; add motion by re-framing pictures we already have.
-- Every module keeps its `_selfcheck()` passing; Settings switches (`shot_cuts`, `auto_sfx`) set to `off` restore the old look.
+- More motion = more real pictures (subscenes), green-screen callouts and word-timed text; never fake camera angles
+  cropped from one picture, and keep camera moves slow and small.
+- Every module keeps its `_selfcheck()` passing; Settings switches (`shot_cuts`, `auto_sfx`, `auto_text`) set to `off` restore the old look.
 
-Details: `.claude/skills/comic-video-pipeline/SKILL.md`, `docs/UPGRADE_PLAN.md`, `COMICS.md`.
+Details: `.claude/skills/comic-video-pipeline/SKILL.md`, `docs/UPGRADE_PLAN.md`, `docs/CINEMATIC_PLAN.md` (audit + stages), `COMICS.md`.

@@ -6,7 +6,7 @@ on:
       video_id: { description: "video_id from the Videos sheet", required: true, default: VID001 }
       scenes: { description: "only these scenes, e.g. 1-8 (blank = whole video)", default: "" }
       draft: { description: "draft: placeholder art + real voice, fast preview", type: boolean, default: false }
-      shards: { description: "parallel image runners (1-20)", default: "18" }
+      shards: { description: "parallel image runners (1-20)", default: "20" }
 
 permissions: { contents: write } # finished videos are published as GitHub releases
 concurrency: { group: "render-${{ inputs.video_id }}", cancel-in-progress: false }

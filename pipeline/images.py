@@ -185,7 +185,8 @@ def main(plan_path, phase, shard, nshards, out):
         list(ex.map(fetch, need))
     exe = sd_cli()
     env = dict(os.environ, LD_LIBRARY_PATH=os.path.dirname(exe))
-    t_start, budget = time.time(), float(os.environ.get("REDRAW_BUDGET_MIN", 180)) * 60  # text redraws stop past this
+    t_start, takes = time.time(), 0
+    limit = float(os.environ.get("SHARD_LIMIT_MIN", 300)) * 60  # the job is killed at 330 min: a redraw must still fit
     for i, j in enumerate(todo):
         dst = os.path.join(out, j["name"])
         if j.get("src"):
@@ -211,12 +212,16 @@ def main(plan_path, phase, shard, nshards, out):
                 if attempt == 2:
                     sys.exit(f"sd-cli failed twice on {j['name']}")
             os.replace(dst + ".tmp.png", dst)
+            takes += 1
             if phase == "refs":
                 break
             text = text_in(dst) if take == 0 else []  # one text redraw at most: each take costs 30+ min
             print(f"  {j['name']}: text check {len(text)} word(s) {' '.join(text[:6])}", flush=True)
-            bad = "stray panel border" if has_gutter(dst) else \
-                "text in the art" if len(text) >= 2 and time.time() - t_start < budget else ""
+            bad = "stray panel border" if has_gutter(dst) else "text in the art" if len(text) >= 2 else ""
+            used = time.time() - t_start
+            if bad and used + used / takes * (1 + sum(not x.get("src") for x in todo[i + 1:])) > limit:
+                print(f"  {j['name']}: {bad}, but a redraw would not fit in the time left: keeping it", flush=True)
+                break
             if not bad:
                 break
             print(f"  {j['name']}: {bad}, redrawing (take {take + 2})", flush=True)
