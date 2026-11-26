@@ -819,6 +819,7 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
     if depth is not None:  # 2.5D parallax: near layers drift against far ones, opposite to the camera's pan
         gy, gx = np.mgrid[0:H, 0:W].astype(np.float32)
         amp = float(C.S.get("parallax", 14)) * (-1 if interp(keys, 1)[1] > interp(keys, 0)[1] else 1)
+        far, subj = (float(np.quantile(depth, q)) - .5 for q in (.2, .9))  # this picture's own far zone and subject
     fx = s["fx"] if s else ""
     parts = particles(fx, W, H, seed) if fx in ("embers", "dust", "snow", "rain", "stars") else \
         ambient(fx, W, H, seed) if fx in ("rays", "fog", "film", "hud") else None
@@ -849,8 +850,9 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
             frame = cv2.remap(frame, gx + shift * near, gy + 0.3 * shift * near, cv2.INTER_LINEAR,
                               borderMode=cv2.BORDER_REFLECT101)
             if focus:
-                f0 = -0.2 + 0.55 * min(t / 0.4, 1.0) ** 2 * (3 - 2 * min(t / 0.4, 1.0))  # eased: far -> subject
-                m = np.clip((np.abs(near - f0) - 0.12) * 2.5, 0, 0.8)[..., None]
+                u = min(t / 0.4, 1.0)
+                f0 = far + (subj - far) * u * u * (3 - 2 * u)  # eased: the far zone -> the nearest subject
+                m = np.clip((np.abs(near - f0) - 0.15) * 2.0, 0, 0.6)[..., None]  # capped: never a fully soft frame
                 frame = (frame * (1 - m) + cv2.GaussianBlur(frame, (0, 0), 5) * m).astype(np.uint8)
         if grade:  # the picture only: text and lettering keep their colours
             frame = grade(frame)
@@ -1351,6 +1353,14 @@ def _selfcheck():
         assert x.shape == (SR // 2,) and abs(np.sqrt(np.mean(x ** 2)) - 1) < 1e-3
     rv = [dict(s=dict(beat="revelation", sfx=""), voice=v, start=v * 30) for v in (5, 20, 40)]
     assert reveals(rv) == {150, 1200} and music_dips(rv, 30)[0] == (5 - .9, 5 + .7)  # 30 s apart
+    C, old = type("C", (), dict(fps=30, S=dict(parallax=14)))(), C
+    d = np.zeros((27, 48), np.float32)
+    d[8:20, 16:32] = 1.0  # a near subject in the middle of a far background
+    cv = (np.random.default_rng(0).random((108, 192, 3)) * 255).astype(np.uint8)
+    last = list(frames(cv, [(0, 1, .5, .5), (1, 1, .5, .5)], 30, 192, 108, depth=d, focus=True))[-1].astype(float)
+    detail = lambda a: np.abs(np.diff(a, axis=1)).mean()
+    assert detail(last[40:72, 70:120]) > 1.5 * detail(last[:20, :40])  # rack focus ends on the subject
+    C = old
     for k in ("rays", "fog", "film", "hud"):
         g = np.full((72, 128, 3), 60, np.uint8)
         ambient(k, 128, 72, 1)(g, 1.0)  # draws in place without errors
