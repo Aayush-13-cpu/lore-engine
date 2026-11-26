@@ -93,7 +93,7 @@ push_sheet() {
 
 storyboard() { # $1 video id: numbered panels + OCR lettering + Scenes rows for every page of its Sources
   push_sheet "$1"
-  gh workflow run storyboard.yml -f video_id="$1"
+  gh workflow run storyboard.yml --ref "$(git branch --show-current)" -f video_id="$1"
   sleep 8
   local run; run=$(gh run list --workflow storyboard.yml --limit 1 --json databaseId -q '.[0].databaseId')
   echo "Storyboard run $run: $(gh run view "$run" --json url -q .url)"
@@ -105,7 +105,7 @@ storyboard() { # $1 video id: numbered panels + OCR lettering + Scenes rows for 
 
 start() { # $1 video id, $2 scenes, $3 draft true/false
   push_sheet "$1"
-  gh workflow run "$WF" -f video_id="$1" -f scenes="$2" -f draft="$3"
+  gh workflow run "$WF" --ref "$(git branch --show-current)" -f video_id="$1" -f scenes="$2" -f draft="$3"
   sleep 8 # shortcut: assumes the newest run is ours; fine for one person triggering renders
   watch_run "$(latest)"
 }
