@@ -38,6 +38,10 @@ PAUSE = {"?": 1.5, "!": 1.4, ".": 1.2, ";": 0.8, ":": 0.8, ",": 0.45}  # breath 
 assert set(XFADE) | {"auto"} == TRANSITIONS
 AUTO_T = ["cut", "fade", "cut", "dissolve"]  # cuts and soft fades only: whips and zooms every scene read amateur
 AUTO_M = ["in", "right", "out", "left", "in", "up", "out", "down"]
+INTENT = {"threat": "in", "revelation": "in", "artifact": "in", "power": "in", "tragedy": "out", "cosmic": "right",
+          "multiverse": "left", "origin": "up", "history": "right", "tech": "in"}  # beat -> the move that means it
+FLIP = {"in": "out", "out": "in", "left": "right", "right": "left", "up": "down", "down": "up"}
+FOCUS = {"artifact", "revelation", "tragedy"}  # beats that get a rack focus onto the subject
 PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y): slow and small, like a rostrum camera
     "in": [(0, 1.0, .5, .5), (1, 1.06, .5, .48)], "out": [(0, 1.06, .5, .48), (1, 1.0, .5, .5)],
     "left": [(0, 1.06, .54, .5), (1, 1.06, .46, .5)], "right": [(0, 1.06, .46, .5), (1, 1.06, .54, .5)],
@@ -435,6 +439,19 @@ def motion_keys(s, i, L, lead):
     return PRESETS[m]
 
 
+def moves(tl):
+    """Camera move per picture of an AI line: the beat's meaning (push in on a threat, pull out on a loss, pan across
+    scale), else the rotation; never the same move twice in a row. [] = the template/sheet decides (motion_keys)."""
+    s = tl["s"]
+    if s["template"] != "full" or s.get("page") or s["broll"] or s["motion"] != "auto":
+        return []
+    beats, out = s.get("beats") or [""], []
+    for p in range(max(1, len(s["images"]))):
+        m = INTENT.get(beats[min(p, len(beats) - 1)]) or AUTO_M[(tl["i"] + p) % len(AUTO_M)]
+        out.append(FLIP.get(m, m) if out and m == out[-1] else m)
+    return out
+
+
 def scene_cuts(tl):
     """Cut times (s into the clip) between a line's pictures: on the word where each picture's part of the sentence
     starts (the sheet's splits), else an even share; [] = one picture (cards, pages, b-roll, single shots)."""
@@ -670,8 +687,9 @@ def depth_of(canvas):
     return cv2.GaussianBlur(cv2.resize(d, (max(w // 4, 1), max(h // 4, 1))), (0, 0), 2)
 
 
-def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0, depth=None, t0=0.0):
-    """t0 = where this shot starts inside its scene: captions, SFX and shake keep scene time across cuts."""
+def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, seed=0, depth=None, t0=0.0, focus=False):
+    """t0 = where this shot starts inside its scene: captions, SFX and shake keep scene time across cuts.
+    focus: rack focus from the background onto the nearest subject over the first 40% of the shot (needs depth)."""
     fps = C.fps
     ch_, cw_ = canvas.shape[:2]
     base = max(W / cw_, H / ch_)
@@ -705,6 +723,10 @@ def frames(canvas, keys, n, W, H, overlays=(), s=None, lead=0.0, reveal=None, se
             shift = amp * (2 * t - 1)
             frame = cv2.remap(frame, gx + shift * near, gy + 0.3 * shift * near, cv2.INTER_LINEAR,
                               borderMode=cv2.BORDER_REFLECT101)
+            if focus:
+                f0 = -0.2 + 0.55 * min(t / 0.4, 1.0) ** 2 * (3 - 2 * min(t / 0.4, 1.0))  # eased: far -> subject
+                m = np.clip((np.abs(near - f0) - 0.12) * 2.5, 0, 0.8)[..., None]
+                frame = (frame * (1 - m) + cv2.GaussianBlur(frame, (0, 0), 5) * m).astype(np.uint8)
         for ov in overlays:
             blend(frame, ov, tau)
         if parts:
@@ -808,13 +830,18 @@ def render_scene(job):
                 sets = [build(dict(s2, images=[p]), tl2, C.W, C.H) for p in pics] or [build(s2, tl2, C.W, C.H)]
                 over, reveal = sets[0][1], sets[0][3]
                 deep = float(C.S.get("parallax", 14)) and (s2["template"] in PARALLAX or s2["template"].startswith("gs:"))
-                keys = [sets[0][2]] + [PRESETS[AUTO_M[(tl["i"] + p) % len(AUTO_M)]] for p in range(1, len(sets))]
+                mv = moves(tl) if len(shots) == 1 else []
+                keys = [PRESETS[mv[p]] if mv else sets[0][2] if p == 0 else PRESETS[AUTO_M[(tl["i"] + p) % len(AUTO_M)]]
+                        for p in range(len(sets))]
+                beats = s2.get("beats") or [""]
+                rack = str(C.S.get("rack_focus", "auto")).lower() != "off"
                 edges = [0] + [round(t * C.fps) for t in cuts[:len(sets) - 1]] + [count]
                 if tl2.get("hit"):  # shake (and a sheet flash) on the lettered word, not at the line start
                     s2, ld = dict(s2, sfx=s2["sfx"] or "impact"), tl2["hit"][1]
                 for p, (a, b) in enumerate(zip(edges, edges[1:])):
                     yield from frames(sets[p][0], keys[p], b - a, C.W, C.H, over, s2, ld, reveal, seed,
-                                      depth_of(sets[p][0]) if deep else None, a / C.fps)
+                                      depth_of(sets[p][0]) if deep else None, a / C.fps,
+                                      rack and beats[min(p, len(beats) - 1)] in FOCUS)
         dst = path + ".pre.mp4" if s["template"].startswith("gs:") else path
         encode(shot_frames(), dst, C.W, C.H)
         if dst != path:
@@ -1111,6 +1138,9 @@ def _selfcheck():
     assert scene_cuts(dict(s=s5, F=150, out=0, Tf=0, words=w5)) == [(2.9 + 3.0) / 2]  # the cut lands on "Thanos"
     assert scene_cuts(dict(s=dict(s5, splits=[]), F=150, out=0, Tf=0, words=w5)) == [2.5]  # no splits: even share
     assert scene_cuts(dict(s=dict(s5, images=["a"]), F=150, out=0, Tf=0, words=w5)) == []
+    m5 = dict(s5, images=["a", "b", "c"], beats=["threat", "threat", ""], motion="auto", page="")
+    assert moves(dict(s=m5, i=1)) == ["in", "out", "left"]  # threat pushes in, a 2nd threat pulls out, plain rotates
+    assert moves(dict(s=dict(m5, motion="static"), i=1)) == []  # the sheet's own motion wins
     C = old
     P = dict(characters=dict(THANOS=dict(name="Thanos", alias="The Mad Titan", first_appearance="Iron Man #55 (1973)")))
     mk = lambda text, v: dict(s=dict(template="full", caption="", broll="", narration=text), Tf=0, F=300, out=0, voice=v,
