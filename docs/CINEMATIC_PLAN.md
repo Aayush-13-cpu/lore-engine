@@ -38,6 +38,9 @@ Status: **Done**, **Stage A** (written, not yet merged), **Partial**, **Missing*
 | 17 | Quality control | Partial | `report.md`: loudness, A/V sync, black, frozen, blur, duplicates, text in the art, missing cut-outs. **Missing:** images/min, shots/min, repeated moves, transition share, text in safe areas (Stage H). Fixing one scene: `./lore.sh render VID 12-14`; the cache redraws only what changed. |
 | 18 | Modular, switchable | Done | Each feature has a Settings switch; `off` restores the old look. |
 
+**Status 2026-11-26:** Stages A-H are built on `feature/cinematic` (commits cf7164f..c534121), with self-checks and
+local renders. VID002 render run 45751953047 has Stage A only.
+
 ## 3. Stages (one commit each, self-checks plus a local render before the next)
 
 All stages after A are compositing and audio only: **no new pictures and no extra image time**.

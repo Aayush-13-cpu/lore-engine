@@ -33,7 +33,15 @@ Rule of thumb: never add generated images to get motion. Re-frame what exists.
    characters, `callout_gap` 20 s apart). One `cut_<ID>.png` per character on chroma green, keyed in `render.cutout()`.
 6. Not split: cards, comic pages, b-roll, `||` rows (already several pictures), short lines.
 
-Switches in Settings: `shot_cuts`, `auto_sfx`, `auto_text` (`off` = the old look).
+7. Beats (`sheet.classify`): each picture is tagged revelation, tragedy, threat, artifact, tech, cosmic, power,
+   origin, multiverse, history or plain (character names never count). The beat picks the subscene's shot type, the
+   camera move (`render.moves`: push in on a threat, pull out on a loss, pan across scale), a rack focus
+   (artifact/revelation/tragedy), one effect per line at most every `fx_gap` s (`render.mood`), a gentle grade, an
+   ambience bed, and a riser plus music dip before a revelation. Lore graphics: threat bar on name plates,
+   VERSUS card, year tag (all from sheet data).
+
+Switches in Settings: `shot_cuts`, `auto_sfx`, `auto_text`, `rack_focus`, `auto_fx`, `mood_grade`, `ambience`
+(`off` = the old look). Report: pictures/min, hard-cut share, repeated moves, beats, effects.
 
 ## Anti-slop checklist
 - No text inside generated art: `images.py` OCRs the first take and redraws once, only while the rest of the shard still fits in `SHARD_LIMIT_MIN` (default 300).
