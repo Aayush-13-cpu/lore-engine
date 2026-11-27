@@ -8,6 +8,7 @@ Release. All compute runs on free CPU runners; the laptop only edits the sheet a
 ./lore.sh draft  VID002          # placeholder art + real voice, fast pacing check
 ./lore.sh render VID002 [1-12]   # full render (or a scene range) -> release VID002-r<run>
 ./lore.sh flow   VID002          # draw non-character shots in Google Flow on this laptop -> release flow-VID002
+./lore.sh make   VID002          # flow, retrying missing shots (FLOW_ROUNDS, default 6), then render only if all are drawn
 ./lore.sh status | watch | get VID002 | releases
 python -m pipeline.sheet VID002 > /dev/null          # validate the sheet (needs openpyxl)
 PYTHONPATH=. python -c "from pipeline import render; render._selfcheck()"   # also check, shorts, voice
