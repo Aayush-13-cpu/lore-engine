@@ -336,7 +336,9 @@ def build(vid, subset="", path=SHEET):
             errors.append(f"character {c}: ref_page must be <page>@x0,y0,x1,y1 on an existing page "
                           f"({source_problem(mc.group(1)) if mc else 'bad format'})")
         refs.append(dict(
-            name=f"ref_{c}.png", asset=f"assets/characters/{c}.png", seed=int(num(ch.get("seed"), seed(c))), refs=[], char=c,
+            # your own reference: private repo first (comic art never goes in this public repo), then an approved one here
+            name=f"ref_{c}.png", asset=next((p for p in (f"private/characters/{c}.png", f"assets/characters/{c}.png")
+                                             if os.path.exists(p)), f"assets/characters/{c}.png"), seed=int(num(ch.get("seed"), seed(c))), refs=[], char=c,
             crop=crop,
             prompt=f"{style['prompt_prefix']} Character reference sheet of {ch['name']}: {ch['look']}. Single full figure, "
                    f"three-quarter view, standing, plain light grey studio background, even lighting. {style['prompt_suffix']}"))
