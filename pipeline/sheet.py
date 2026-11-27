@@ -73,7 +73,8 @@ CLAUSE = re.compile(r"^(and|but|then|when|as|while|until|so|because|who|which|wh
 
 
 BEATS = {  # what a beat is about -> (words that say so, the shot that tells it); earlier wins a tie
-    "revelation": ("truth secret secrets revealed reveal discovered realized learned hidden betrayed lie lies",
+    "revelation": ("truth secret secrets revealed reveal discovered realized learned hidden betrayed lie lies twist "
+                   "expected understood explained admitted confessed unmasked uncovered",
                    "A backlit silhouette reveal shot"),
     "tragedy": ("died death dead dying lost alone grief mourned tears sacrifice sacrificed gone buried wept empty mourn",
                 "A quiet high-angle wide shot, the figure small and alone"),
@@ -361,6 +362,7 @@ def build(vid, subset="", path=SHEET):
 
 def _selfcheck():
     assert classify("Every star. Every planet.") == "cosmic" and classify("He walked on.") == ""
+    assert classify("Then he did something nobody expected.") == "revelation"
     assert classify("And she was Death.", {"Death"}) == "" and classify("Everyone he loved died, alone.") == "tragedy"
     w = "He beat a living gardener, then Thanos took the last gem".split()
     assert split_words(w, 2, {"Thanos"}) == [5]  # the cut lands on the new subject's name

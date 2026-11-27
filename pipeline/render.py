@@ -747,7 +747,7 @@ def build(s, tl, W, H, scale=1.0, captions=True):
             over.append(prep(im, round(W * .95) - im.width, round(H * .08), a, t_out=b))
         else:
             im = comic.punch_text(text, maxw=W - 200)
-            over.append(prep(im, (W - im.width) // 2, round(H * .1), a, pop=True, t_out=b))
+            over.append(prep(im, (W - im.width) // 2, round(calm_y(canvas, im.height / H) * H), a, pop=True, t_out=b))
     text, at = tl.get("hit") or (s["sfx_text"], lead)
     if text:
         im = comic.sfx_word(text.upper(), st.get("sfx_color") or "#FFE14D")
@@ -755,6 +755,12 @@ def build(s, tl, W, H, scale=1.0, captions=True):
     if keys is None:
         keys = motion_keys(s, tl["i"], L, lead)
     return cv2.cvtColor(np.asarray(canvas.convert("RGB")), cv2.COLOR_RGB2BGR), [o for o in over if o], keys, reveal
+
+
+def calm_y(canvas, h, spots=(.1, .6)):
+    """Top of the band (fraction of the frame) where big text covers the least detail: a head is busy, sky is calm."""
+    g = cv2.Canny(cv2.cvtColor(np.asarray(canvas.convert("RGB").resize((480, 270))), cv2.COLOR_RGB2GRAY), 80, 160)
+    return min(spots, key=lambda y: g[int(y * 270):int((y + h) * 270), 72:408].mean())
 
 
 def cutout(name, scene, height):
@@ -1289,6 +1295,11 @@ def main(plan_path, imgdir, audiodir, outdir, shard=""):
 
 
 def _selfcheck():
+    head = Image.new("RGB", (1920, 1080), (20, 20, 30))  # a detailed head near the top: text goes below it
+    d = ImageDraw.Draw(head)
+    for i in range(0, 400, 12):
+        d.line([(700 + i, 60), (760 + i, 330)], fill="white", width=3)
+    assert calm_y(head, .14) == .6 and calm_y(head.transpose(Image.FLIP_TOP_BOTTOM), .14) == .1
     page = Image.new("RGB", (1000, 1500), "white")  # wide top panel, tall left, two stacked right
     for x0, y0, x1, y1 in [(40, 40, 960, 500), (40, 540, 480, 1460), (520, 540, 960, 980), (520, 1020, 960, 1460)]:
         page.paste((60, 60, 60), (x0, y0, x1, y1))
