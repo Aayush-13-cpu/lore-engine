@@ -1142,7 +1142,10 @@ def mix(voice, sfx, total, out, P, work, dips=()):
         ln += (f":measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
                f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true")
     run(["ffmpeg", "-y", "-loglevel", "error", *inputs,
-         "-filter_complex", fc + ln + ",aresample=48000[a]", "-map", "[a]", "-t", f"{total:.3f}", "-ar", "48000", out])
+         # loudnorm falls back to dynamic mode on spiky mixes and AAC overshoots: a 4x-oversampled limiter at -2 dB
+         # holds the true peak under -1 dBTP after encoding (Doom r35: -0.4 -> -1.5, loudness unchanged)
+         "-filter_complex", fc + ln + ",aresample=192000,alimiter=limit=0.79:attack=1:release=50:level=disabled,"
+         "aresample=48000[a]", "-map", "[a]", "-t", f"{total:.3f}", "-ar", "48000", out])
 
 
 # ---------------- text outputs ----------------
