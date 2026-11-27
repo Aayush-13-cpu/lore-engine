@@ -26,8 +26,8 @@ DEFAULTS = dict(
     channel_name="LORE VAULT", fps=30, width=1920, height=1080,
     image_width=1024, image_height=576, image_steps=4, upscale="yes",
     tts="chatterbox", voice_ref="", voice="am_michael", voice_speed=1.0,
-    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", auto_text="auto", shot_seconds=3.5, image_budget=140, cutouts=6, callout_gap=20,
-    text_gap=15, fx_gap=20, ambience_db=-46, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
+    scene_pad=0.3, shot_cuts="auto", auto_sfx="auto", auto_text="auto", shot_seconds=3.0, image_budget=170, cutouts=8, callout_gap=12,
+    text_gap=10, fx_gap=20, ambience_db=-46, music_db=-21, lufs=-14, burn_subs="no", print_pass=0.5, parallax=14,
     shorts_count=1, shorts_min=25, shorts_max=58, watermark="yes",
     shorts_cta="Want to know how it ends? The full story is on my channel.",
 )
@@ -118,8 +118,10 @@ def split_words(words, m, names=frozenset()):
 
 
 def name_re(ch):
-    nm = str(ch.get("name", "")).strip()
-    return re.compile(rf"\b{re.escape(nm)}\b") if nm else None
+    """The full name, or the one word the id spells: narration says "Doom" far more often than "Doctor Doom"."""
+    nm, cid = str(ch.get("name", "")).strip(), str(ch.get("char_id", "")).strip().title()
+    alts = [re.escape(x) for x in (nm, cid if cid.isalpha() else "") if x]
+    return re.compile(rf"\b(?:{'|'.join(alts)})\b") if alts else None
 
 
 def scene_prompt(style, visual, cast):
@@ -360,6 +362,9 @@ def _selfcheck():
     assert classify("And she was Death.", {"Death"}) == "" and classify("Everyone he loved died, alone.") == "tragedy"
     w = "He beat a living gardener, then Thanos took the last gem".split()
     assert split_words(w, 2, {"Thanos"}) == [5]  # the cut lands on the new subject's name
+    doom = name_re({"name": "Doctor Doom", "char_id": "DOOM"})
+    assert doom.search("where Doom started") and doom.search("Doom's wife") and doom.search("Doctor Doom")
+    assert not doom.search("doomed") and not name_re({"name": "x", "char_id": "VALERIA1"}).search("Valeria")
 
 
 if __name__ == "__main__":

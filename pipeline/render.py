@@ -50,10 +50,10 @@ MOOD = {  # beat -> (B, G, R gain, saturation, black lift): gentle, on top of th
     "history": ((.86, .97, 1.06), .7, 6), "tech": ((1.05, 1.04, .94), .95, 0), "power": ((1.0, 1.0, 1.0), 1.1, 0),
 }
 PRESETS = {  # keyframes (t 0..1, zoom, focus x, focus y): slow and small, like a rostrum camera
-    "in": [(0, 1.0, .5, .5), (1, 1.06, .5, .48)], "out": [(0, 1.06, .5, .48), (1, 1.0, .5, .5)],
-    "left": [(0, 1.06, .54, .5), (1, 1.06, .46, .5)], "right": [(0, 1.06, .46, .5), (1, 1.06, .54, .5)],
-    "up": [(0, 1.06, .5, .54), (1, 1.06, .5, .46)], "down": [(0, 1.06, .5, .46), (1, 1.06, .5, .54)],
-    "static": [(0, 1.02, .5, .5), (1, 1.03, .5, .5)], "shake": [(0, 1.08, .5, .5), (1, 1.1, .5, .5)],
+    "in": [(0, 1.0, .5, .5), (1, 1.04, .5, .485)], "out": [(0, 1.04, .5, .485), (1, 1.0, .5, .5)],
+    "left": [(0, 1.04, .515, .5), (1, 1.04, .485, .5)], "right": [(0, 1.04, .485, .5), (1, 1.04, .515, .5)],
+    "up": [(0, 1.04, .5, .515), (1, 1.04, .5, .485)], "down": [(0, 1.04, .5, .485), (1, 1.04, .5, .515)],
+    "static": [(0, 1.01, .5, .5), (1, 1.02, .5, .5)], "shake": [(0, 1.05, .5, .5), (1, 1.06, .5, .5)],
 }
 CARDS = {"title", "sting", "quote", "endscreen"}
 ROMAN = "I II III IV V VI VII VIII IX X XI XII XIII XIV XV XVI XVII XVIII XIX XX".split()
@@ -487,7 +487,7 @@ def motion_keys(s, i, L, lead):
         m = {"title": "in", "sting": "in", "quote": "in", "dossier": "in", "endscreen": "static"}.get(
             s["template"], AUTO_M[i % len(AUTO_M)])
     if m == "punch":
-        return [(0, 1.0, .5, .5), (min((lead + .3) / L, .5), 1.08, .5, .48), (1, 1.1, .5, .47)]
+        return [(0, 1.0, .5, .5), (min((lead + .3) / L, .5), 1.05, .5, .49), (1, 1.06, .5, .485)]
     return PRESETS[m]
 
 

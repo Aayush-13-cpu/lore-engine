@@ -11,6 +11,7 @@ Lore Engine - make a video from the terminal (rendering runs on GitHub, not this
 
   ./lore.sh sheet               open the content sheet to write a video
   ./lore.sh storyboard VID001   read the video's real comics: numbered panels + lettering + ready Scenes rows
+  ./lore.sh make VID001         flow, retrying failed shots until every one is drawn, then the full render
   ./lore.sh flow VID001         draw the video's shots in Google Flow, 4 per batch (famous characters are left for FLUX)
   ./lore.sh draft  VID001       fast preview: real voice + placeholder art (~15-20 min)
   ./lore.sh render VID001       full video + Shorts + thumbnail (first time ~2 h; re-renders reuse cached images)
@@ -74,14 +75,25 @@ flow() { # videos whose comics we cannot use (Marvel, DC, ...): draw the images 
   mkdir -p "out/${1:?}"
   "$py" -m pipeline.sheet "$1" > "out/$1/plan.json"
   # VS Code's snap terminal leaks its GTK/GIO paths, which crash Chrome (GLib settings schema error)
-  env -u GSETTINGS_SCHEMA_DIR -u GTK_PATH -u GTK_EXE_PREFIX -u GIO_MODULE_DIR -u GDK_PIXBUF_MODULE_FILE \
-    -u GDK_PIXBUF_MODULEDIR -u GTK_IM_MODULE_FILE -u LOCPATH \
-    XDG_DATA_DIRS="${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-${XDG_DATA_DIRS:-/usr/share}}" \
-    "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"
+  # each round redraws only the shots still missing; capped because a shot Flow refuses on policy never comes back
+  local rounds="${FLOW_ROUNDS:-6}" ok="" r
+  for r in $(seq "$rounds"); do
+    if env -u GSETTINGS_SCHEMA_DIR -u GTK_PATH -u GTK_EXE_PREFIX -u GIO_MODULE_DIR -u GDK_PIXBUF_MODULE_FILE \
+      -u GDK_PIXBUF_MODULEDIR -u GTK_IM_MODULE_FILE -u LOCPATH \
+      XDG_DATA_DIRS="${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-${XDG_DATA_DIRS:-/usr/share}}" \
+      "$py" flow/flow_images.py "out/$1/plan.json" "out/$1/flow"; then ok=1; break; fi
+    if [ "$r" -lt "$rounds" ]; then echo "Flow round $r/$rounds: shots still missing, trying them again in 60 s (Ctrl-C stops)"; sleep 60; fi
+  done
   gh release view "flow-$1" >/dev/null 2>&1 ||
     gh release create "flow-$1" --prerelease --title "Flow images for $1" --notes "Google Flow images used by renders of $1"
-  gh release upload "flow-$1" "out/$1"/flow/*.png $(ls "out/$1"/flow/*.prompt 2>/dev/null) --clobber  # .prompt: which shot each is
-  echo "Flow images published. Now render with: ./lore.sh render $1"
+  if ls "out/$1"/flow/*.png >/dev/null 2>&1; then  # publish what we have, even after a failed round: nothing redrawn twice
+    gh release upload "flow-$1" "out/$1"/flow/*.png $(ls "out/$1"/flow/*.prompt 2>/dev/null) --clobber  # .prompt: which shot each is
+  fi
+  if [ -z "$ok" ]; then
+    echo "Flow still refuses some shots after $rounds rounds (listed above as 'still missing'): reword them in the sheet and run this again. No render started."
+    return 1
+  fi
+  echo "All Flow images done and published."
 }
 
 push_sheet() {
@@ -115,6 +127,7 @@ case "${1:-help}" in
   draft) start "${2:?usage: ./lore.sh draft VID001}" "" true ;;
   storyboard) storyboard "${2:?usage: ./lore.sh storyboard VID001}" ;;
   flow) flow "${2:?usage: ./lore.sh flow VID001}" ;;
+  make) flow "${2:?usage: ./lore.sh make VID001}" && start "$2" "" false ;;
   status) need; status ;;
   watch) need; watch_run "$(latest)" ;;
   get) need; get "${2:?usage: ./lore.sh get VID001}" ;;

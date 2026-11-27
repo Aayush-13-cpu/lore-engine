@@ -233,7 +233,8 @@ def main(plan_path, out):
             jobs.append(j)
     print(f"{len(jobs)} images to draw in Flow; {len(flux)} character shots left for FLUX on the runners")
     if not jobs:
-        return
+        return 0
+    missing = []
     size = max(1, int(os.environ.get("FLOW_BATCH", "4")))
     groups = {}  # same references attached -> same batch
     for j in jobs:
@@ -291,6 +292,7 @@ def main(plan_path, out):
                 done += 1
                 if tag(j) not in got:
                     print(f"[{done}/{len(jobs)}] {j['name']}: no image, skipped (reword this shot)", flush=True)
+                    missing.append(j["name"])
                     continue
                 dst = os.path.join(out, j["name"])
                 save(page, got[tag(j)], dst)
@@ -300,7 +302,10 @@ def main(plan_path, out):
                       f"{time.time() - t0:.0f}s)" + ("  <- not 16:9: check it" if not j.get("char") and not 1.6 < w / h < 1.95
                                                      else ""), flush=True)
         ctx.close()
+    if missing:
+        print(f"{len(missing)} still missing: {' '.join(missing)}", flush=True)
+    return len(missing)
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    sys.exit(1 if main(*sys.argv[1:3]) else 0)  # 1 = some shots still missing: lore.sh runs another round
