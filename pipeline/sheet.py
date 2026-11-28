@@ -143,12 +143,14 @@ def thumb_prompt(visual, cast):
                     for i, c in enumerate(cast[:2]))
     return " ".join(x for x in (
         "A bold modern cartoon illustration for a YouTube thumbnail.", f"{visual.rstrip('.')}.", looks, refs,
-        "The character is large and close, filling the left half of the frame, with an exaggerated expressive pose and "
-        "face, a huge solid red circle behind them like a blood moon, and one small dark silhouette prop from their "
-        "story beside them.",
-        "Thick confident black ink outlines, flat bold colors with simple cel shading, a few loose sketchy hatching "
-        "strokes, high contrast, clean and readable at small size.",
-        "The whole right half of the image is plain empty off-white paper with a faint texture.",
+        "The character is large and close, seated or leaning toward the viewer, filling the left half of the frame from "
+        "the waist up, with an exaggerated, slightly comedic expressive pose; behind their shoulder a huge solid red "
+        "circle like a blood moon, with a small dark silhouette of a landmark from their story and a few tiny black "
+        "bats or birds against it.",
+        "Hand-drawn pen-and-ink illustration: thick black outlines, dense crosshatching and scratchy hatched shadows, "
+        "muted earthy colors with strong crimson and red accents, high contrast, readable at small size.",
+        "The whole right half of the image is plain empty off-white paper with a faint grainy texture, a few red ink "
+        "splatter drops near the middle.",
         "No text, no lettering, no letters, no logo, no watermark, no frame, no border.") if x)
 
 
