@@ -376,6 +376,7 @@ def thumbnail(img, text, accent, badge, k):
     rng = np.random.default_rng(len(text))
     art = np.asarray(ImageEnhance.Contrast(cover(img, W, H)).enhance(1.08), np.float32)
     paper = np.array(PAPER, np.float32) + rng.normal(0, 5, (H, W, 1))  # paper grain
+    art = art * paper / 255  # multiply onto the paper: FLUX's white background turns the same cream, no seam at the fade
     fade = np.clip((np.arange(W) - W * .52) / (W * .1), 0, 1)[None, :, None]  # art -> clean paper behind the text
     im = Image.fromarray((art * (1 - fade) + paper * fade).clip(0, 255).astype(np.uint8))
     red = tuple(int(v * .82) for v in rgb(accent))
