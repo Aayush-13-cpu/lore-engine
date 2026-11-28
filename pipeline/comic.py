@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 FONTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts")
-FONT_FILES = {"title": "Bangers-Regular.ttf", "bold": "Anton-Regular.ttf", "letter": "ComicNeue-Bold.ttf"}
+FONT_FILES = {"title": "Bangers-Regular.ttf", "bold": "Anton-Regular.ttf", "letter": "ComicNeue-Bold.ttf",
+              "brush": "PermanentMarker-Regular.ttf"}
 GREEN = (0, 255, 0)
 INK = (12, 12, 14)
 
@@ -365,25 +366,55 @@ def gs_frame(kind, w, h, accent="#E62429"):
     return im
 
 
+PAPER = (240, 233, 218)
+
+
 def thumbnail(img, text, accent, badge, k):
+    """Illustrated explainer look: cartoon character on the left (FLUX, see sheet.THUMB), cream paper on the right with
+    big red dry-brush lettering, a brush underline and a hand-drawn arrow pointing at the character. badge: unused."""
     W, H = 1280, 720
-    im = ImageEnhance.Color(ImageEnhance.Contrast(cover(img, W, H)).enhance(1.18)).enhance(1.2)
-    im = print_pass(im, k * .5, cell=7)
-    shade = np.linspace(0.85, 0.0, W, dtype=np.float32)[None, :, None]  # darken the text side
-    a = np.asarray(im, np.float32) * (1 - shade * 0.75)
-    im = Image.fromarray(a.clip(0, 255).astype(np.uint8))
-    d = ImageDraw.Draw(im)
+    rng = np.random.default_rng(len(text))
+    art = np.asarray(ImageEnhance.Contrast(cover(img, W, H)).enhance(1.08), np.float32)
+    paper = np.array(PAPER, np.float32) + rng.normal(0, 5, (H, W, 1))  # paper grain
+    fade = np.clip((np.arange(W) - W * .52) / (W * .1), 0, 1)[None, :, None]  # art -> clean paper behind the text
+    im = Image.fromarray((art * (1 - fade) + paper * fade).clip(0, 255).astype(np.uint8))
+    red = tuple(int(v * .82) for v in rgb(accent))
+    x0, x1 = round(W * .56), round(W * .97)
     words = text.upper().split()
-    lines = [" ".join(words[:max(1, len(words) // 2)]), " ".join(words[max(1, len(words) // 2):])] if len(words) > 2 else [text.upper()]
-    for i, line in enumerate(l for l in lines if l):
-        size = 170
-        while font("title", size).getlength(line) > W * .6 and size > 70:
-            size -= 6
-        d.text((48, 120 + i * 190), line, font=font("title", size), fill=(255, 228, 0) if i == 0 else "white",
-               stroke_width=10, stroke_fill=INK)
-    if badge:
-        f = font("bold", 40)
-        bw = f.getlength(badge.upper()) + 36
-        d.rectangle([40, 36, 40 + bw, 96], fill=rgb(accent))
-        d.text((58, 40), badge.upper(), font=f, fill="white")
+    best = None
+    for n in range(1, min(3, len(words)) + 1):  # fewest lines whose biggest size fits the right half
+        lines = [" ".join(words[round(i * len(words) / n):round((i + 1) * len(words) / n)]) for i in range(n)]
+        size = min(220, int(H * .62 / n / 1.05))
+        while max(font("brush", size).getlength(l) for l in lines) > x1 - x0 and size > 40:
+            size -= 4
+        if not best or size > best[1] * 1.15:
+            best = (lines, size)
+    lines, size = best
+    f = font("brush", size)
+    lh = round(size * 1.05)
+    y = round(H * .48 - lh * len(lines) / 2)
+    ink = Image.new("L", (W, H), 0)
+    di = ImageDraw.Draw(ink)
+    for i, line in enumerate(lines):
+        di.text((x0 + (x1 - x0 - f.getlength(line)) / 2, y + i * lh), line, font=f, fill=255)
+    tb = ink.getbbox()  # the letters' real extent: brush glyphs hang below the line height
+    yb = tb[3] + 18  # brush underline: a tapered, slightly wobbly stroke
+    pts = [(x0 + (x1 - x0) * t, yb + 6 * np.sin(t * 5) + 14 * t * (1 - t)) for t in np.linspace(.08, .92, 30)]
+    for j, (px, py) in enumerate(pts):
+        r = 3 + 9 * np.sin(np.pi * j / (len(pts) - 1))
+        di.ellipse([px - r * 2, py - r, px + r * 2, py + r], fill=255)
+    dry = (rng.random((H, W)) > .06).astype(np.uint8) * 255  # dry-brush speckle in the paint
+    ink = Image.fromarray(np.minimum(np.asarray(ink), dry))
+    shadow = ink.filter(ImageFilter.GaussianBlur(3))
+    im.paste((60, 10, 10), (4, 5), shadow.point(lambda v: v * .45))
+    im.paste(red, (0, 0), ink)
+    d = ImageDraw.Draw(im)  # hand-drawn arrow from the title towards the character
+    ax, ay = tb[0] + 70, tb[1] - 24  # short, above the title's left end, curving down towards the character
+    curve = [((1 - t) ** 2 * ax + 2 * (1 - t) * t * (ax - 60) + t * t * (W * .5),
+              (1 - t) ** 2 * ay + 2 * (1 - t) * t * (ay - 60) + t * t * (ay + 20)) for t in np.linspace(0, 1, 24)]
+    d.line(curve, fill=INK, width=9, joint="curve")
+    (ex, ey), (px, py) = curve[-1], curve[-3]
+    ang = np.arctan2(ey - py, ex - px)
+    for s in (2.5, -2.5):
+        d.line([(ex, ey), (ex - 36 * np.cos(ang + s * .2), ey - 36 * np.sin(ang + s * .2))], fill=INK, width=9)
     return im

@@ -1303,6 +1303,9 @@ def _selfcheck():
     for i in range(0, 400, 12):
         d.line([(700 + i, 60), (760 + i, 330)], fill="white", width=3)
     assert calm_y(head, .14) == .6 and calm_y(head.transpose(Image.FLIP_TOP_BOTTOM), .14) == .1
+    tn = np.asarray(comic.thumbnail(Image.new("RGB", (1024, 576), comic.PAPER), "HERO OR VILLAIN?", "#E62429", "", 1))
+    red = (tn[..., 0] > 150) & (tn[..., 1] < 80)
+    assert tn.shape == (720, 1280, 3) and red[:, 700:].mean() > .03 and red[:, :600].mean() < .01  # title on the right
     page = Image.new("RGB", (1000, 1500), "white")  # wide top panel, tall left, two stacked right
     for x0, y0, x1, y1 in [(40, 40, 960, 500), (40, 540, 480, 1460), (520, 540, 960, 980), (520, 1020, 960, 1460)]:
         page.paste((60, 60, 60), (x0, y0, x1, y1))

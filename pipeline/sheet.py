@@ -135,6 +135,23 @@ def scene_prompt(style, visual, cast):
                                 style["prompt_suffix"]) if x)
 
 
+def thumb_prompt(visual, cast):
+    """Every thumbnail in one house look (the illustrated explainer style): big cartoon character on the left, empty
+    cream paper on the right where comic.thumbnail() letters the title. Only the character and props change."""
+    looks = " ".join(f"{c['name']} drawn exactly on-model: {c['look']}." for c in cast)
+    refs = " ".join(f"Image {i + 1} is the official look of {c['name']}: copy that exact costume and colors."
+                    for i, c in enumerate(cast[:2]))
+    return " ".join(x for x in (
+        "A bold modern cartoon illustration for a YouTube thumbnail.", f"{visual.rstrip('.')}.", looks, refs,
+        "The character is large and close, filling the left half of the frame, with an exaggerated expressive pose and "
+        "face, a huge solid red circle behind them like a blood moon, and one small dark silhouette prop from their "
+        "story beside them.",
+        "Thick confident black ink outlines, flat bold colors with simple cel shading, a few loose sketchy hatching "
+        "strokes, high contrast, clean and readable at small size.",
+        "The whole right half of the image is plain empty off-white paper with a faint texture.",
+        "No text, no lettering, no letters, no logo, no watermark, no frame, no border.") if x)
+
+
 def cutout_prompt(style, ch):
     """One character alone on chroma green, keyed out by the renderer and slid into scenes on their name."""
     return " ".join([
@@ -323,7 +340,7 @@ def build(vid, subset="", path=SHEET):
 
     if str(video.get("thumbnail_prompt", "")).strip():
         tids = [c for c in ids(video.get("thumbnail_characters", "")) if c in chars]
-        images.append(dict(name="thumb.png", prompt=scene_prompt(style, video["thumbnail_prompt"], [chars[c] for c in tids]),
+        images.append(dict(name="thumb.png", prompt=thumb_prompt(video["thumbnail_prompt"], [chars[c] for c in tids]),
                            seed=seed(vid, "thumb"), refs=[f"ref_{c}.png" for c in tids[:2]],
                            visual=str(video["thumbnail_prompt"]).strip(), cast=tids[:2]))
         cast_ids += tids[:2]
